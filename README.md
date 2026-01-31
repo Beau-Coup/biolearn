@@ -35,20 +35,21 @@ With this in mind, the project should follow a structure similar to the followin
 
 ```
 biolearn/
-  __init__.py
-  models/
-  losses/
-  stl/
-  data/
-  training/
-  verification/
-  utils/
-  cli.py
-tests/
-scripts/
-main.py
-pyproject.toml
-README.md
+|-- biolearn/
+|   |-- __init__.py
+|   |-- cli.py
+|   |-- data/
+|   |-- losses/
+|   |-- models/
+|   |-- stl/
+|   |-- training/
+|   |-- utils/
+|   `-- verification/
+|-- examples/
+|-- scripts/
+|-- tests/
+|-- pyproject.toml
+`-- README.md
 ```
 
 Notes:
@@ -66,4 +67,4 @@ Contributions are welcome.
 - Use clear, descriptive docstrings and type hints where helpful.
 
 ## License
-MIT. See `LICENSE`.
+MIT. See [`LICENSE`](LICENSE).
