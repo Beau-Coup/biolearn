@@ -66,6 +66,10 @@ class Inhibition(Edge):
         return jnp.array([0.0, f])
 
 
-class BioModel(eqx.Module):
-    def __init__(self):
+class BioGNN(eqx.Module):
+    """Implementation of the bio-inspired graph neural network."""
+
+    def __init__(self, g):
+        # Go through the edges and init the message passing function
+
         pass
