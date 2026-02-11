@@ -13,4 +13,15 @@ dependencies = [
     "equinox>=0.13.4",
     "jax>=0.9.0",
     "numpy>=2.4.1",
+    "optax>=0.2.7",
+]
+
+[tool.setuptools]
+packages = ["biolearn"]
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.10.8",
+    "pandas>=3.0.0",
+    "tqdm>=4.67.3",
 ]

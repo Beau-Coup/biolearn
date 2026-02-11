@@ -5,13 +5,15 @@ by Eric Palanques-Tost, Hanna Krasowski, Murat Arcak, Ron Weiss, Calin Belta
 """
 
 from abc import abstractmethod
-from typing import Any, Callable, List, Optional, Sequence, Tuple, Type, final
+from typing import Any, List, Optional, Sequence, Tuple, Type, final
 
 import diffrax
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jaxtyping as jt
+
+from .activations import NonNegativeLinear
 
 
 class BioSyst(eqx.Module):
@@ -20,9 +22,7 @@ class BioSyst(eqx.Module):
     """
 
     @abstractmethod
-    def diffrax_step(
-        self, t: jt.ScalarLike, y: FloatArray1D, args: Tuple
-    ) -> FloatArray1D:
+    def diffrax_step(self, t: jt.ScalarLike, y: jax.Array, args: Tuple) -> jax.Array:
         """
         ODE step for the model.
         Args:
@@ -37,7 +37,7 @@ class BioSyst(eqx.Module):
     def _simulate(
         self,
         y0: jt.Float[jt.Array, "..."],
-        ts: Optional[FloatArray1D],
+        ts: Optional[jax.Array],
         to_ss: bool = False,
         args: Tuple[Any, ...] = (),
         stiff: bool = True,
@@ -98,65 +98,12 @@ class BioSyst(eqx.Module):
         return y_pred, solution
 
 
-# Declare some commonly used types
-FloatArray = jt.Float[jt.Array, "..."]
-FloatArray1D = jt.Float[jt.Array, "_"]
-FloatArray2D = jt.Float[jt.Array, "_ _"]
-MoormanSizeArray = jt.Float[jt.Array, "2"]
-
-ActivationFunctionType = Callable[
-    [jt.Float[jt.Array, "n_inputs"]], jt.Float[jt.Array, "#1"]
-]
-
-
-class NonNegativeLinear(eqx.Module):
-    """
-    Non-negative linear activation function.
-    """
-
-    _log_cnt: float = eqx.field(static=True)
-    _weight: FloatArray2D
-    _bias: FloatArray1D
-
-    in_features: int = eqx.field(static=True, converter=int)
-    out_features: int = eqx.field(static=True, converter=int)
-
-    def __init__(self, in_features: int, out_features: int, *, key):
-        wkey, bkey = jax.random.split(key, 2)
-
-        wshape = (out_features, in_features)
-        bshape = (out_features,)
-
-        lim = 1 / jnp.sqrt(in_features)
-        _weight = jax.random.uniform(wkey, wshape, minval=0.1, maxval=lim)
-        _bias = jax.random.uniform(bkey, bshape, minval=0.001, maxval=0.01)
-
-        self._log_cnt = 1e-7
-        self._weight = jnp.log(_weight + self._log_cnt)
-        self._bias = jnp.log(_bias + self._log_cnt)
-
-        self.in_features = in_features
-        self.out_features = out_features
-
-    @property
-    def weight(self):
-        return jnp.exp(self._weight) - self._log_cnt
-
-    @property
-    def bias(self):
-        return jax.nn.relu(jnp.exp(self._bias) - self._log_cnt)
-
-    def __call__(self, x: FloatArray1D) -> FloatArray1D:
-        x = self.weight @ x + self.bias
-        return x
-
-
 class NFCNodeBase(eqx.Module):
     """
     Base class for an NFC node.
     """
 
-    activation: ActivationFunctionType
+    activation: eqx.Module
 
     n_species: int = eqx.field(converter=int, static=True)
     n_inputs: int = eqx.field(converter=int, static=True)
@@ -167,7 +114,7 @@ class NFCNodeBase(eqx.Module):
         self,
         n_species: int,
         n_inputs: int,
-        activation: Optional[ActivationFunctionType] = None,
+        activation: Optional[eqx.Module] = None,
         is_first: bool = True,
         is_last: bool = False,
         *,
@@ -218,7 +165,7 @@ class NFCNodeBase(eqx.Module):
     def shape(self) -> Tuple[int,]:
         return (self.n_species,)
 
-    def __call__(self, x: FloatArray1D, z: FloatArray1D) -> FloatArray1D:
+    def __call__(self, x: jax.Array, z: jax.Array) -> jax.Array:
         """
         Calculates the ODE step for the node.
         Args:
@@ -232,7 +179,7 @@ class NFCNodeBase(eqx.Module):
         return self.ode_step(x, z)
 
     @final
-    def ode_step(self, x: FloatArray1D, z: FloatArray1D) -> FloatArray1D:
+    def ode_step(self, x: jax.Array, z: jax.Array) -> jax.Array:
         """
         Calculates the ODE step for the node.
         Args:
@@ -268,7 +215,7 @@ class NFCNodeBase(eqx.Module):
         return dz
 
     @final
-    def find_ss(self, x: FloatArray1D) -> jt.ScalarLike:
+    def find_ss(self, x: jax.Array) -> jt.ScalarLike:
         """
         Finds the steady-state of the output species of the node given the input.
         Args:
@@ -299,13 +246,13 @@ class NFCNodeBase(eqx.Module):
         return y
 
     @abstractmethod
-    def _ode_step(self, x: FloatArray1D, z: FloatArray1D) -> FloatArray1D:
+    def _ode_step(self, x: jax.Array, z: jax.Array) -> jax.Array:
         raise NotImplementedError()
 
     def get_weights(self):
         return list(filter(eqx.is_inexact_array, jax.tree_util.tree_leaves(self)))
 
-    def _find_ss(self, x: FloatArray1D) -> jt.ScalarLike:
+    def _find_ss(self, x: jax.Array) -> jt.ScalarLike:
         raise NotImplementedError()
 
 
@@ -327,7 +274,7 @@ class MoormanPerceptron(NFCNodeBase):
     def __init__(
         self,
         n_inputs: int,
-        activation: Optional[ActivationFunctionType] = None,
+        activation: Optional[eqx.Module] = None,
         gamma: jt.ScalarLike = 1000.0,
         beta: jt.ScalarLike = 1.0,
         k: jt.ScalarLike = 0.5,
@@ -349,15 +296,15 @@ class MoormanPerceptron(NFCNodeBase):
         self.beta = beta
         self.k = k
 
-    def phi(self, x: FloatArray1D) -> FloatArray1D:
+    def phi(self, x: jax.Array) -> jax.Array:
         return x / (self.k + x) if not self.is_first else x
 
-    def _ode_step(self, x: FloatArray1D, z: MoormanSizeArray) -> MoormanSizeArray:
+    def _ode_step(self, x: jax.Array, z: jax.Array) -> jax.Array:
         seq = self.gamma * jnp.prod(z)
         dz = self.activation(self.phi(x)) - seq - self.beta * z
         return dz
 
-    def _find_ss(self, x: FloatArray1D) -> jt.ScalarLike:
+    def _find_ss(self, x: jax.Array) -> jt.ScalarLike:
         u, v = self.activation(self.phi(x))
 
         b = self.beta / self.gamma + (v - u) / self.beta
@@ -422,16 +369,16 @@ class NFCLayer(eqx.Module):
 
     def __call__(
         self,
-        x: FloatArray1D,
-        z: FloatArray2D,
-    ) -> FloatArray2D:
+        x: jax.Array,
+        z: jax.Array,
+    ) -> jax.Array:
         return self.ode_step(x, z)
 
     def ode_step(
         self,
-        x: FloatArray1D,
-        z: FloatArray2D,
-    ) -> FloatArray2D:
+        x: jax.Array,
+        z: jax.Array,
+    ) -> jax.Array:
         """
         Deterministic update step of a layer of the NFC.
         Calculates dy/dt of the layer for the given input and state
@@ -460,8 +407,8 @@ class NFCLayer(eqx.Module):
 
     def ss_estimation(
         self,
-        x: FloatArray1D,
-    ) -> FloatArray1D:
+        x: jax.Array,
+    ) -> jax.Array:
         """
         Estimation of the SS of the layer given static inputs
 
@@ -547,7 +494,7 @@ class NFC(BioSyst):
     def out_nodes(self):
         return self.layers[-1].n_nodes
 
-    def ode_step(self, x: FloatArray1D, z: FloatArray2D) -> FloatArray2D:
+    def ode_step(self, x: jax.Array, z: jax.Array) -> jax.Array:
         """
         Calculates the ODE step for the NFC model.
         Args:
@@ -589,7 +536,7 @@ class NFC(BioSyst):
 
     @staticmethod
     def _handle_inputs(
-        x: FloatArray1D | FloatArray2D, ts: Optional[FloatArray1D]
+        x: jax.Array | jax.Array, ts: Optional[jax.Array]
     ) -> diffrax.LinearInterpolation:
         x = jnp.atleast_1d(x)
 
@@ -608,9 +555,9 @@ class NFC(BioSyst):
 
     def simulate(
         self,
-        x: FloatArray1D | FloatArray2D,
-        ts: Optional[FloatArray1D],
-        x_ts: Optional[FloatArray1D] = None,
+        x: jax.Array | jax.Array,
+        ts: Optional[jax.Array],
+        x_ts: Optional[jax.Array] = None,
         to_ss: bool = False,
         stiff: bool = True,
         throw: bool = True,
@@ -688,8 +635,8 @@ class NFC(BioSyst):
 
     def ss_estimation(
         self,
-        x: FloatArray1D,
-    ) -> FloatArray1D:
+        x: jax.Array,
+    ) -> jax.Array:
         """
         Returns an estimation of the steady-state of the system
 
@@ -753,7 +700,7 @@ class MoormanNFC(NFC):  # pylint: disable=abstract-method
         gamma: jt.ScalarLike = 1000.0,
         beta: jt.ScalarLike = 1.0,
         k: jt.ScalarLike = 0.2,
-        activation: Optional[ActivationFunctionType] = None,
+        activation: Optional[eqx.Module] = None,
         *,
         key: jt.PRNGKeyArray,
     ):
