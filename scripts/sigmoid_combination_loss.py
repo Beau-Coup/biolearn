@@ -10,13 +10,9 @@ import optax
 import pandas as pd
 from tqdm import tqdm
 
-from biolearn import (
-    NFC,
-    BioSyst,
-    EarlyStopper,
-    MoormanNFC,
-)
-from biolearn.losses import make_temporal_xor_ss_loss
+from biolearn import NFC, BioSyst, EarlyStopper, MoormanNFC
+from biolearn.losses import sigmoid_ic_loss
+from biolearn.specifications.ss_classification import xor_ss_spec
 
 SS_CLASS_EXP_RESULTS_PATH = "data/results"
 
@@ -442,7 +438,8 @@ def train_model(
 
     ts = jnp.arange(0, 20, 1.0)
 
-    loss_fn = make_temporal_xor_ss_loss(ts, eps1=0.1, eps2=0.05, t1=5)
+    loss_fn = sigmoid_ic_loss(specification=xor_ss_spec, ts=ts)
+    # Now a function
 
     learning_rate_schedule = optax.exponential_decay(
         init_value=lr,  # Starting learning rate

@@ -22,6 +22,22 @@ uv run main.py
 As the library grows, the recommended usage will be via a package entrypoint
 under `biolearn` and example scripts under `examples/`.
 
+## Scripts
+Run scripts as modules from the repo root:
+
+```bash
+uv run python -m scripts.ss_classification
+```
+
+For other scripts, replace `ss_classification` with the module name.
+
+## Tests
+If tests are present, run them from the repo root:
+
+```bash
+uv run pytest
+```
+
 ## Project Structure
 
 The code is meant to be modular with the following use cases in mind.
@@ -34,22 +50,15 @@ With this in mind, the project should follow a structure similar to the followin
 (suggested; folders can be introduced as needed):
 
 ```
-biolearn/
-|-- biolearn/
-|   |-- __init__.py
-|   |-- cli.py
-|   |-- data/
-|   |-- losses/
-|   |-- models/
-|   |-- stl/
-|   |-- training/
-|   |-- utils/
-|   `-- verification/
-|-- examples/
-|-- scripts/
-|-- tests/
-|-- pyproject.toml
-`-- README.md
+├── biolearn
+│   ├── losses
+│   ├── models
+│   ├── specifications
+│   └── utils
+├── data
+├── scripts
+├── pyproject.toml
+└── README.md
 ```
 
 Notes:

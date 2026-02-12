@@ -97,6 +97,9 @@ class BioSyst(eqx.Module):
 
         return y_pred, solution
 
+    def simulate(self, *args, **kwargs):
+        raise NotImplementedError
+
 
 class NFCNodeBase(eqx.Module):
     """

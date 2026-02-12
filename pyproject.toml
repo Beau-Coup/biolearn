@@ -1,6 +1,6 @@
 [project]
 name = "biolearn"
-version = "0.1.0"
+version = "0.1.1"
 description = "A testing platform for learning of biological models with STL."
 authors = [
     {name = "Alex Beaudin", email = "48172047+Beau-Coup@users.noreply.github.com"}
