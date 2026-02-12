@@ -17,6 +17,7 @@ from biolearn import (
     MoormanNFC,
 )
 from biolearn.losses import make_temporal_xor_ss_loss
+from biolearn.specifications import xor_ss_spec
 
 SS_CLASS_EXP_RESULTS_PATH = "data/results"
 
@@ -473,6 +474,31 @@ def train_model(
         trained_syst = biosyst
         training_info = EarlyStopper(1, 1, 1, 1)
         training_info.loss_traj.append(jnp.inf)
+
+    def _count_satisfied(x_batch):
+        def _run_single(xi):
+            y_ss_i, _ = trained_syst.simulate(
+                x=xi,
+                ts=ts,
+                to_ss=False,
+                stiff=True,
+                max_steps=int(1e6),
+                rtol=1e-6,
+                atol=1e-6,
+                progress_bar=False,
+            )
+            x_traj = jnp.array([[xi[0], xi[1]]])
+            x_traj = jnp.repeat(x_traj, repeats=y_ss_i.shape[0], axis=0)
+            y_out = y_ss_i[:, -1][:, None]
+            traj = jnp.concatenate([x_traj, y_out], axis=1)
+            return xor_ss_spec(traj, eps1=0.1, eps2=0.05, t1=5)
+
+        ros = jax.vmap(_run_single)(x_batch)
+        satisfied = ros >= 0.0
+        return int(satisfied.sum()), int(satisfied.shape[0])
+
+    satisfied_count, total_count = _count_satisfied(x_train)
+    print(f"Specification satisfied on {satisfied_count}/{total_count} initial conditions.")
 
     if show:
         fig, axes = plt.subplots(1, 2)

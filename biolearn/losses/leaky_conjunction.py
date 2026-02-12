@@ -9,7 +9,7 @@ from .base import make_loss
 
 
 def sigmoid_combination(robustnesses: jax.Array) -> jax.Array:
-    return jax.nn.sigmoid(-robustnesses).mean() - 0.5
+    return jax.nn.sigmoid(-robustnesses).mean()
 
 
 def sigmoid_ic_loss(specification, ts, **kwargs):
