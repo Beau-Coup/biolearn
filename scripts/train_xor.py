@@ -1,5 +1,7 @@
+import argparse
 import os
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+import traceback
+from typing import Any, Callable, Iterator, List, Optional, Sequence, Tuple
 
 import equinox as eqx
 import jax
@@ -13,15 +15,17 @@ from tqdm import tqdm
 from biolearn import (
     NFC,
     BioSyst,
-    EarlyStopper,
     MoormanNFC,
 )
-from biolearn.losses import make_temporal_xor_ss_loss
+from biolearn.losses import make_temporal_xor_ss_loss, sigmoid_ic_loss, slack_relu_ic_loss
+from biolearn.losses.slack_relu import SlackModel
 from biolearn.specifications import xor_ss_spec
 
 SS_CLASS_EXP_RESULTS_PATH = "data/results"
 
 jax.config.update("jax_enable_x64", True)
+
+LOSS_CHOICES = ["xor_ss", "sigmoid", "slack_relu"]
 
 
 def _clip_pytree(
@@ -233,14 +237,10 @@ def train(
     x_train: jt.Array,
     y_train: Optional[jt.Array] = None,
     freeze_mask: Optional[jt.PyTree] = None,
-    early_stop_delta_loss_tol: jt.ScalarLike = 1e-4,
-    early_stop_patience: int = 10,
-    early_stop_loss_tol: jt.ScalarLike = 1e-4,
-    early_stop_delta_tol: jt.ScalarLike = 1e-4,
     verbose: bool = True,
     *,
     key: jt.PRNGKeyArray,
-) -> Tuple[jt.PyTree, EarlyStopper]:
+) -> Tuple[jt.PyTree, List[float]]:
     """
     Training loop for an NFC model.
 
@@ -254,18 +254,11 @@ def train(
         y_train: target training data.
         freeze_mask: function masking trainable parameters or the model.
             All inexact arrays are trained by default
-        early_stop_delta_loss_tol: stop early if the loss
-            does not change by this amount.
-        early_stop_patience: allow for this many epochs without improvement
-            before stopping early.
-        early_stop_loss_tol: stop early if the loss is below this value.
-        early_stop_delta_tol: stop early if the sum of the differences of parameters
-            before and after updating is below this value.
         verbose: whether to print training info.
         key: random key generator for the data loader
 
     Returns:
-        Training model.
+        Tuple of (trained model, loss trajectory).
     """
     if batch_size > x_train.shape[0]:
         raise ValueError("Batch size cannot be larger than the dataset size.")
@@ -296,26 +289,19 @@ def train(
         _new_model = eqx.apply_updates(_model, _updates)
         _delta = compute_difference(_model, _new_model)
         _grad_mag = compute_grad_mag(_grads)
-        # jax.debug.breakpoint()
-        # eqx.debug.breakpoint_if(_grad_mag>100.0)
-        return _loss, _delta, _grad_mag, _new_model, _new_optim_state, _model
+        return _loss, _delta, _grad_mag, _new_model, _new_optim_state
 
     y_train = y_train if y_train is not None else jnp.zeros(x_train.shape[0])
     data_iter = dataloader((x_train, y_train), batch_size, key=key)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
-    early_stopper = EarlyStopper(
-        delta_loss_tol=early_stop_delta_loss_tol,
-        patience=early_stop_patience,
-        loss_tol=early_stop_loss_tol,
-        delta_tol=early_stop_delta_tol,
-    )
+    loss_traj = []
 
     pbar = tqdm(range(epochs), total=epochs, disable=not verbose)
     for _ in pbar:
         x_batch, y_batch = next(data_iter)
         try:
-            loss, delta_mag, grad_mag, model, opt_state, prev_model = batch_step(
+            loss, delta_mag, grad_mag, model, opt_state = batch_step(
                 model, x_batch, y_batch, opt_state
             )
         except Exception:  # pylint: disable=broad-except
@@ -323,20 +309,14 @@ def train(
             traceback.print_exc()
             break
 
-        early_end, msg = early_stopper.evaluate(loss, delta_mag)
-        if early_end:
-            if verbose:
-                tqdm.write(msg)
-            model = prev_model
-            break
-
+        loss_traj.append(float(loss))
         pbar.set_description(
             f"Loss: {loss:.4f}, Delta Mag: {delta_mag:.4f}, Grad Mag: {grad_mag:.4f}"
         )
     else:
         if verbose:
             tqdm.write(f"Reached the end of the {epochs} epochs")
-    return model, early_stopper
+    return model, loss_traj
 
 
 class ClassModel(BioSyst):
@@ -417,22 +397,40 @@ def create_dataset(n_samples: int, max_val=1.0):
     return x_train, (grid_x, grid_y)
 
 
+def _make_loss_fn(loss_name: str, ts: jax.Array):
+    """Create the loss function and optional model wrapper for the given loss type."""
+    if loss_name == "xor_ss":
+        loss_fn = make_temporal_xor_ss_loss(ts, eps1=0.1, eps2=0.05, t1=5)
+        wrap_model = None
+    elif loss_name == "sigmoid":
+        loss_fn = sigmoid_ic_loss(specification=xor_ss_spec, ts=ts)
+        wrap_model = None
+    elif loss_name == "slack_relu":
+        loss_fn = slack_relu_ic_loss(specification=xor_ss_spec, ts=ts)
+        wrap_model = SlackModel
+    else:
+        raise ValueError(f"Unknown loss function: {loss_name!r}. Choose from {LOSS_CHOICES}")
+    return loss_fn, wrap_model
+
+
 def train_model(
     biosyst: ClassModel,
     x_train: jax.Array,
+    loss_name: str,
     lr: float = 0.05,
     epochs: int = 1200,
     show: bool = False,
     *,
     key: jax.Array,
-) -> Tuple[NFC, EarlyStopper]:
+) -> Tuple[NFC, List[float]]:
     """
     Trains the simulator model given a dataset with parameter sets and
-    a list of robstness functions.
+    a list of robustness functions.
 
     Args:
         biosyst: the NFC to train
         x_train: dataset with the values for x.
+        loss_name: which loss function to use (xor_ss, sigmoid, slack_relu).
         key: random key to use for training.
     Returns:
 
@@ -443,7 +441,9 @@ def train_model(
 
     ts = jnp.arange(0, 20, 1.0)
 
-    loss_fn = make_temporal_xor_ss_loss(ts, eps1=0.1, eps2=0.05, t1=5)
+    loss_fn, wrap_model = _make_loss_fn(loss_name, ts)
+
+    trainable = wrap_model(biosyst) if wrap_model is not None else biosyst
 
     learning_rate_schedule = optax.exponential_decay(
         init_value=lr,  # Starting learning rate
@@ -455,25 +455,24 @@ def train_model(
     optimizer = optax.adabelief(learning_rate=learning_rate_schedule)
 
     try:
-        trained_syst, training_info = train(
-            biosyst,
+        trained_model, loss_traj = train(
+            trainable,
             optimizer=optimizer,
             loss_fn=loss_fn,
             epochs=epochs,
             batch_size=x_train.shape[0],
             x_train=x_train,
             y_train=y_train,
-            # freeze_mask=freeze_parameter_mask(nfc, parameters=["beta"]),
-            early_stop_loss_tol=1e-7,
-            early_stop_delta_loss_tol=0.0001,
-            early_stop_patience=1000,
-            early_stop_delta_tol=-1,
             key=key,
         )
+        # Unwrap if we used a model wrapper
+        if wrap_model is not None:
+            trained_syst = trained_model.model
+        else:
+            trained_syst = trained_model
     except KeyboardInterrupt:
         trained_syst = biosyst
-        training_info = EarlyStopper(1, 1, 1, 1)
-        training_info.loss_traj.append(jnp.inf)
+        loss_traj = [float(jnp.inf)]
 
     def _count_satisfied(x_batch):
         def _run_single(xi):
@@ -535,11 +534,11 @@ def train_model(
         )
         plt.show()
 
-    return trained_syst, training_info
+    return trained_syst, loss_traj
 
 
 def run_training(
-    layer_sizes, x_train, k1, k2, w, epochs: int, lr: float, show=False, *, key
+    layer_sizes, x_train, k1, k2, w, epochs: int, lr: float, loss_name: str, show=False, *, key
 ):
     sk1, sk2 = jax.random.split(key, num=2)
     print("Dataset shape: ", x_train.shape)
@@ -553,23 +552,24 @@ def run_training(
     )
     biosyst = ClassModel(nfc=nfc, k=k2, delta=1.0, w=w)
 
-    trained_biosyst, training_info = train_model(
-        biosyst, x_train, epochs=epochs, lr=lr, show=show, key=sk2
+    trained_biosyst, loss_traj = train_model(
+        biosyst, x_train, loss_name=loss_name, epochs=epochs, lr=lr, show=show, key=sk2
     )
-    return trained_biosyst, training_info
+    return trained_biosyst, loss_traj
 
 
 def repeat_training(
-    layer_sizes, x_train, n, epochs=1200, lr=0.05, save_path=None, show=False, *, key
+    layer_sizes, x_train, n, epochs=1200, lr=0.05, loss_name="xor_ss", save_path=None, show=False, *, key
 ):
     keys = jax.random.split(key, num=n)
 
     info = []
     for i, ki in enumerate(keys):
-        trained_sim, training_info = run_training(
+        trained_sim, loss_traj = run_training(
             layer_sizes,
             epochs=epochs,
             lr=lr,
+            loss_name=loss_name,
             x_train=x_train,
             key=ki,
             show=show,
@@ -578,7 +578,7 @@ def repeat_training(
             k2=0.8,
         )
 
-        info.append([training_info.steps, training_info.loss_traj[-1]])
+        info.append([len(loss_traj), loss_traj[-1] if loss_traj else float(jnp.inf)])
 
     return info
 
@@ -588,6 +588,7 @@ def analyze_layer_sizes(
     x_train,
     epochs=1000,
     lr=0.05,
+    loss_name="xor_ss",
     n=10,
     save=False,
     show=False,
@@ -611,6 +612,7 @@ def analyze_layer_sizes(
             key=key,
             epochs=epochs,
             lr=lr,
+            loss_name=loss_name,
             save_path=model_save_path,
             show=show,
         )
@@ -625,29 +627,44 @@ def analyze_layer_sizes(
     return all_info
 
 
-def main():
-    seed = 0
-    key = jax.random.PRNGKey(seed)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train XOR classification with different loss functions")
+    parser.add_argument(
+        "--loss",
+        type=str,
+        choices=LOSS_CHOICES,
+        required=True,
+        help="Loss function to use for training",
+    )
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--lr", type=float, default=0.05)
+    parser.add_argument("--n-seeds", type=int, default=3)
+    parser.add_argument("--n-samples", type=int, default=121, help="Number of samples (should be a perfect square)")
+    parser.add_argument("--show", action="store_true")
+    parser.add_argument("--save", action="store_true", default=True)
+    return parser.parse_args()
 
+
+def main():
+    args = parse_args()
+
+    key = jax.random.PRNGKey(args.seed)
     key = jax.random.split(key, num=5)[-1]
 
     archs = [(2, 1), (2, 1, 1)]
-    n_seeds = 3
-    n_samples = 11**2
-    epochs = 3000
-    lr = 0.05
-    show = False
 
-    x_train, _ = create_dataset(n_samples=n_samples, max_val=1.0)
+    x_train, _ = create_dataset(n_samples=args.n_samples, max_val=1.0)
 
     info = analyze_layer_sizes(
         archs,
         x_train=x_train,
-        epochs=epochs,
-        lr=lr,
-        save=True,
-        show=show,
-        n=n_seeds,
+        epochs=args.epochs,
+        lr=args.lr,
+        loss_name=args.loss,
+        save=args.save,
+        show=args.show,
+        n=args.n_seeds,
         key=key,
     )
 
