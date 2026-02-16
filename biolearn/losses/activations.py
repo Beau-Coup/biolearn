@@ -18,8 +18,9 @@ activations = {
     "silu": lambda r: jax.nn.silu(-r).mean(),
     "softmax": lambda r: jax.nn.softmax(-r).mean(),
     "tanh": lambda r: jax.nn.tanh(-r).mean(),
+    "logsumexp": lambda r: jax.nn.logsumexp(-r).mean(),
 }
 
 _g = globals()
-for _name, _fn in activations:
+for _name, _fn in activations.items():
     _g[f"make_{_name}_loss"] = _activation_loss_factory(_fn)

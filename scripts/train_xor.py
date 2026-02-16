@@ -17,7 +17,7 @@ from biolearn import (
     BioSyst,
     MoormanNFC,
 )
-from biolearn.losses import make_temporal_xor_ss_loss, sigmoid_ic_loss, slack_relu_ic_loss
+from biolearn.losses import *
 from biolearn.losses.slack_relu import SlackModel
 from biolearn.specifications import xor_ss_spec
 
@@ -25,7 +25,7 @@ SS_CLASS_EXP_RESULTS_PATH = "data/results"
 
 jax.config.update("jax_enable_x64", True)
 
-LOSS_CHOICES = ["xor_ss", "sigmoid", "slack_relu"]
+LOSS_CHOICES = ["xor_ss", "sigmoid", "slack_relu", "silu", "softmax", "logsumexp"]
 
 
 def _clip_pytree(
@@ -403,13 +403,24 @@ def _make_loss_fn(loss_name: str, ts: jax.Array):
         loss_fn = make_temporal_xor_ss_loss(ts, eps1=0.1, eps2=0.05, t1=5)
         wrap_model = None
     elif loss_name == "sigmoid":
-        loss_fn = sigmoid_ic_loss(specification=xor_ss_spec, ts=ts)
+        loss_fn = make_sigmoid_loss(specification=xor_ss_spec, ts=ts)
+        wrap_model = None
+    elif loss_name == "silu":
+        loss_fn = make_silu_loss(specification=xor_ss_spec, ts=ts)
+        wrap_model = None
+    elif loss_name == "logsumexp":
+        loss_fn = make_logsumexp_loss(specification=xor_ss_spec, ts=ts)
+        wrap_model = None
+    elif loss_name == "silu":
+        loss_fn = make_silu_loss(specification=xor_ss_spec, ts=ts)
         wrap_model = None
     elif loss_name == "slack_relu":
         loss_fn = slack_relu_ic_loss(specification=xor_ss_spec, ts=ts)
         wrap_model = SlackModel
     else:
-        raise ValueError(f"Unknown loss function: {loss_name!r}. Choose from {LOSS_CHOICES}")
+        raise ValueError(
+            f"Unknown loss function: {loss_name!r}. Choose from {LOSS_CHOICES}"
+        )
     return loss_fn, wrap_model
 
 
@@ -497,7 +508,9 @@ def train_model(
         return int(satisfied.sum()), int(satisfied.shape[0])
 
     satisfied_count, total_count = _count_satisfied(x_train)
-    print(f"Specification satisfied on {satisfied_count}/{total_count} initial conditions.")
+    print(
+        f"Specification satisfied on {satisfied_count}/{total_count} initial conditions."
+    )
 
     if show:
         fig, axes = plt.subplots(1, 2)
@@ -538,7 +551,17 @@ def train_model(
 
 
 def run_training(
-    layer_sizes, x_train, k1, k2, w, epochs: int, lr: float, loss_name: str, show=False, *, key
+    layer_sizes,
+    x_train,
+    k1,
+    k2,
+    w,
+    epochs: int,
+    lr: float,
+    loss_name: str,
+    show=False,
+    *,
+    key,
 ):
     sk1, sk2 = jax.random.split(key, num=2)
     print("Dataset shape: ", x_train.shape)
@@ -559,7 +582,16 @@ def run_training(
 
 
 def repeat_training(
-    layer_sizes, x_train, n, epochs=1200, lr=0.05, loss_name="xor_ss", save_path=None, show=False, *, key
+    layer_sizes,
+    x_train,
+    n,
+    epochs=1200,
+    lr=0.05,
+    loss_name="xor_ss",
+    save_path=None,
+    show=False,
+    *,
+    key,
 ):
     keys = jax.random.split(key, num=n)
 
@@ -628,7 +660,9 @@ def analyze_layer_sizes(
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train XOR classification with different loss functions")
+    parser = argparse.ArgumentParser(
+        description="Train XOR classification with different loss functions"
+    )
     parser.add_argument(
         "--loss",
         type=str,
@@ -640,7 +674,12 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=0.05)
     parser.add_argument("--n-seeds", type=int, default=3)
-    parser.add_argument("--n-samples", type=int, default=121, help="Number of samples (should be a perfect square)")
+    parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=121,
+        help="Number of samples (should be a perfect square)",
+    )
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--save", action="store_true", default=True)
     return parser.parse_args()
