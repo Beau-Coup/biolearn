@@ -25,7 +25,16 @@ SS_CLASS_EXP_RESULTS_PATH = "data/results"
 
 jax.config.update("jax_enable_x64", True)
 
-LOSS_CHOICES = ["xor_ss", "sigmoid", "slack_relu", "silu", "softmax", "logsumexp"]
+LOSS_CHOICES = [
+    "xor_ss",
+    "sigmoid",
+    "slack_relu",
+    "silu",
+    "softmax",
+    "logsumexp",
+    "slack_softmax",
+    "leaky_relu",
+]
 
 
 def _clip_pytree(
@@ -411,11 +420,17 @@ def _make_loss_fn(loss_name: str, ts: jax.Array):
     elif loss_name == "logsumexp":
         loss_fn = make_logsumexp_loss(specification=xor_ss_spec, ts=ts)
         wrap_model = None
-    elif loss_name == "silu":
-        loss_fn = make_silu_loss(specification=xor_ss_spec, ts=ts)
+    elif loss_name == "softmax":
+        loss_fn = make_softmax_loss(specification=xor_ss_spec, ts=ts)
+        wrap_model = None
+    elif loss_name == "leaky_relu":
+        loss_fn = make_leaky_relu_loss(specification=xor_ss_spec, ts=ts)
         wrap_model = None
     elif loss_name == "slack_relu":
         loss_fn = slack_relu_ic_loss(specification=xor_ss_spec, ts=ts)
+        wrap_model = SlackModel
+    elif loss_name == "slack_softmax":
+        loss_fn = slack_softmax_loss(specification=xor_ss_spec, ts=ts)
         wrap_model = SlackModel
     else:
         raise ValueError(

@@ -19,6 +19,7 @@ activations = {
     "softmax": lambda r: jax.nn.softmax(-r).mean(),
     "tanh": lambda r: jax.nn.tanh(-r).mean(),
     "logsumexp": lambda r: jax.nn.logsumexp(-r).mean(),
+    "leaky_relu": lambda r: jax.nn.leaky_relu(-r).mean(),
 }
 
 _g = globals()
