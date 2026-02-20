@@ -15,6 +15,8 @@ import jax.numpy as jnp
 
 from biolearn.models.nfc import BioSyst
 
+from .base import make_slack_loss
+
 
 class SlackModel(eqx.Module):
     """Wraps a model with per-sample slack variables.
@@ -53,31 +55,9 @@ def slack_relu_ic_loss(
     compatible with the standard training loop.  ``system`` must be a
     :class:`SlackModel` so the loss can read the slack variables.
     """
-
-    @eqx.filter_jit
-    def _loss(system: SlackModel, xs, _ys):
-        def _run_single(x0):
-            y_trace, _ = system.simulate(
-                x=x0,
-                ts=ts,
-                to_ss=False,
-                stiff=True,
-                max_steps=int(1e6),
-                rtol=1e-6,
-                atol=1e-6,
-                progress_bar=False,
-            )
-            x_traj = jnp.array([[x0[0], x0[1]]])
-            x_traj = jnp.repeat(x_traj, repeats=y_trace.shape[0], axis=0)
-
-            y_out = y_trace[:, -1][:, None]
-            traj = jnp.concatenate([x_traj, y_out], axis=1)
-
-            return specification(traj, **kwargs)
-
-        ros = jax.vmap(_run_single)(xs)
-
-        loss = jax.nn.relu(system.slack - ros) - C * system.slack
-        return loss.mean()
-
-    return _loss
+    return make_slack_loss(
+        slack_group_loss=lambda ros, slack: (jax.nn.relu(slack - ros) - C * slack).mean(),
+        specification=specification,
+        ts=ts,
+        **kwargs,
+    )
