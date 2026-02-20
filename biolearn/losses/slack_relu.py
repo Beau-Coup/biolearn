@@ -44,7 +44,7 @@ class SlackModel(eqx.Module):
 def slack_relu_ic_loss(
     specification: Callable[[jax.Array], jax.Array],
     ts: jax.Array,
-    C: float = 1.0,
+    C: float = 1e-2,
     **kwargs,
 ):
     """Create a slack-ReLU loss function over initial conditions.

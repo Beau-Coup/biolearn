@@ -34,6 +34,8 @@ LOSS_CHOICES = [
     "logsumexp",
     "slack_softmax",
     "leaky_relu",
+    "elu",
+    "softrelu",
 ]
 
 
@@ -426,8 +428,15 @@ def _make_loss_fn(loss_name: str, ts: jax.Array):
     elif loss_name == "leaky_relu":
         loss_fn = make_leaky_relu_loss(specification=xor_ss_spec, ts=ts)
         wrap_model = None
+    elif loss_name == "elu":
+        loss_fn = make_elu_loss(specification=xor_ss_spec, ts=ts)
+        wrap_model = None
     elif loss_name == "slack_relu":
         loss_fn = slack_relu_ic_loss(specification=xor_ss_spec, ts=ts)
+
+        wrap_model = SlackModel
+    elif loss_name == "softrelu":
+        loss_fn = make_softrelu_loss(specification=xor_ss_spec, ts=ts)
         wrap_model = SlackModel
     elif loss_name == "slack_softmax":
         loss_fn = slack_softmax_loss(specification=xor_ss_spec, ts=ts)
@@ -520,12 +529,16 @@ def train_model(
 
         ros = jax.vmap(_run_single)(x_batch)
         satisfied = ros >= 0.0
-        return int(satisfied.sum()), int(satisfied.shape[0])
 
-    satisfied_count, total_count = _count_satisfied(x_train)
+        return satisfied
+
+    satisfied = _count_satisfied(x_train)
+    satisfied_count = satisfied.sum()
     print(
-        f"Specification satisfied on {satisfied_count}/{total_count} initial conditions."
+        f"Specification satisfied on {satisfied_count}/{satisfied.shape[0]} initial conditions."
     )
+    n = int(jnp.sqrt(satisfied.shape[0]))
+    print(satisfied.reshape((n, n)))
 
     if show:
         fig, axes = plt.subplots(1, 2)

@@ -3,8 +3,6 @@
 A max loss with a slack variables to encourage robustness
 The slack lives on a SlackModel wrapper so that it is optimized as a regular
 model parameter — no changes to the training loop are needed.
-
-Loss per sample: relu(slack_i - robustness_i) - c * slack_i
 """
 
 from typing import Callable
@@ -19,7 +17,8 @@ from biolearn.losses import SlackModel
 def slack_softmax_loss(
     specification: Callable[[jax.Array], jax.Array],
     ts: jax.Array,
-    C: float = 1.0,
+    C: float = 1e-2,
+    temperature: float = 1.0,
     **kwargs,
 ):
     """Create a slack-ReLU loss function over initial conditions.
@@ -52,7 +51,7 @@ def slack_softmax_loss(
 
         ros = jax.vmap(_run_single)(xs)
 
-        loss = jax.nn.logsumexp((system.slack - ros) / 0.1) - C * system.slack
+        loss = jax.nn.logsumexp((system.slack - ros) / temperature) - C * system.slack
         return loss.mean()
 
     return _loss
