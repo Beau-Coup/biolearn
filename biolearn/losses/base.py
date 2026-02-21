@@ -10,6 +10,7 @@ from typing import Callable
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 from ..models import BioSyst
 
@@ -71,3 +72,47 @@ def make_slack_loss(
         return slack_group_loss(ros, system.slack)
 
     return _loss
+
+
+class BoxDomain(eqx.Module):
+    low: jax.Array
+    high: jax.Array
+    volume: jax.Array
+
+    def __init__(self, low, high):
+        self.low = jnp.asarray(low)
+        self.high = jnp.asarray(high)
+        self.volume = (high - low).prod()
+
+
+def make_integral_loss(
+    weighting_fn: Callable[[jax.Array], jax.Array],
+    domain: BoxDomain,
+    specification: Callable[[jax.Array], jax.Array],
+    ts: jax.Array,
+    **kwargs,
+):
+    """Monte-Carlo integration loss.
+    Computes the integral of the loss over the specified domain.
+
+    :param weighting_gn: the function to apply to the robustnesses
+    :param domain: the bounding box over which to integrate
+    :param specification: the STL spec to use to determine robustness
+    :param ts: the time domain to simulate the system over
+    """
+
+    @eqx.filter_jit
+    def _estimate_integral(key: jax.Array, system: BioSyst, n_points: int):
+        points = jr.uniform(
+            key,
+            (
+                n_points,
+                domain.low.shape[0],
+            ),
+            minval=domain.low,
+            maxval=domain.high,
+        )
+        ros = _robustnesses(system, points, ts, specification, **kwargs)
+        return domain.volume / n_points * weighting_fn(ros)
+
+    return _estimate_integral

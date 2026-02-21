@@ -36,6 +36,7 @@ LOSS_CHOICES = [
     "leaky_relu",
     "elu",
     "softrelu",
+    "relu_integral",
 ]
 
 
@@ -408,7 +409,7 @@ def create_dataset(n_samples: int, max_val=1.0):
     return x_train, (grid_x, grid_y)
 
 
-def _make_loss_fn(loss_name: str, ts: jax.Array):
+def _make_loss_fn(loss_name: str, ts: jax.Array, *, key: Optional[jax.Array] = None):
     """Create the loss function and optional model wrapper for the given loss type."""
     if loss_name == "xor_ss":
         loss_fn = make_temporal_xor_ss_loss(ts, eps1=0.1, eps2=0.05, t1=5)
@@ -433,7 +434,6 @@ def _make_loss_fn(loss_name: str, ts: jax.Array):
         wrap_model = None
     elif loss_name == "slack_relu":
         loss_fn = slack_relu_ic_loss(specification=xor_ss_spec, ts=ts)
-
         wrap_model = SlackModel
     elif loss_name == "softrelu":
         loss_fn = make_softrelu_loss(specification=xor_ss_spec, ts=ts)
@@ -441,6 +441,13 @@ def _make_loss_fn(loss_name: str, ts: jax.Array):
     elif loss_name == "slack_softmax":
         loss_fn = slack_softmax_loss(specification=xor_ss_spec, ts=ts)
         wrap_model = SlackModel
+    elif loss_name == "relu_integral":
+        assert key is not None, "Must pass key to relu_integral"
+        domain = BoxDomain(jnp.array([0.0, 0.0]), jnp.array([1.0, 1.0]))
+        loss_fn = relu_integral_ic_loss(
+            domain=domain, specification=xor_ss_spec, ts=ts, n_points=128, key=key
+        )
+        wrap_model = None
     else:
         raise ValueError(
             f"Unknown loss function: {loss_name!r}. Choose from {LOSS_CHOICES}"
@@ -476,7 +483,8 @@ def train_model(
 
     ts = jnp.arange(0, 20, 1.0)
 
-    loss_fn, wrap_model = _make_loss_fn(loss_name, ts)
+    loss_key, key = jax.random.split(key)
+    loss_fn, wrap_model = _make_loss_fn(loss_name, ts, key=loss_key)
 
     trainable = wrap_model(biosyst) if wrap_model is not None else biosyst
 
