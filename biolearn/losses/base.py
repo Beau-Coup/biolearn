@@ -44,8 +44,40 @@ def make_loss(
     group_loss: Callable[[jax.Array], jax.Array],
     specification: Callable[[jax.Array], jax.Array],
     ts: jax.Array,
+    domain: "BoxDomain | None" = None,
+    n_points: int = 128,
+    key: "jax.Array | None" = None,
     **kwargs,
 ):
+    """Create a compiled loss function.
+
+    When *domain* is ``None`` (the default), robustnesses are computed on the
+    batch *xs* supplied by the training loop.
+
+    When a :class:`BoxDomain` and *key* are provided, Monte-Carlo sampling is
+    used instead: *n_points* are drawn uniformly from *domain* each step and
+    the batch *xs* is only used to derive a per-step PRNG key.
+    """
+    if domain is not None:
+        assert key is not None, "key is required when domain is set"
+        _integral_fn = make_integral_loss(
+            integrand=group_loss,
+            domain=domain,
+            specification=specification,
+            ts=ts,
+            **kwargs,
+        )
+
+        @eqx.filter_jit
+        def _loss_integral(system: BioSyst, xs, _ys):
+            hash_val = jnp.bitwise_xor.reduce(
+                jax.lax.bitcast_convert_type(xs.flatten(), jnp.int32)
+            )
+            step_key = jax.random.fold_in(key, hash_val)
+            return _integral_fn(step_key, system, n_points)
+
+        return _loss_integral
+
     @eqx.filter_jit
     def _loss(system: BioSyst, xs, _ys):
         ros = _robustnesses(system, xs, ts, specification, **kwargs)
@@ -113,6 +145,6 @@ def make_integral_loss(
             maxval=domain.high,
         )
         ros = _robustnesses(system, points, ts, specification, **kwargs)
-        return domain.volume / n_points * weighting_fn(ros)
+        return weighting_fn(ros)
 
     return _estimate_integral
