@@ -1,7 +1,7 @@
-import argparse
+import dataclasses
 import os
 import traceback
-from typing import Any, Callable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Iterator, List, Literal, Optional, Sequence, Tuple
 
 import equinox as eqx
 import jax
@@ -10,14 +10,17 @@ import jaxtyping as jt
 import matplotlib.pyplot as plt
 import optax
 import pandas as pd
+import tyro
 from tqdm import tqdm
 
+import wandb
 from biolearn import (
     NFC,
     BioSyst,
     MoormanNFC,
 )
 from biolearn.losses import *
+from biolearn.losses.base import _robustnesses
 from biolearn.losses.slack_relu import SlackModel
 from biolearn.specifications import xor_ss_spec
 
@@ -25,7 +28,7 @@ SS_CLASS_EXP_RESULTS_PATH = "data/results"
 
 jax.config.update("jax_enable_x64", True)
 
-LOSS_CHOICES = [
+LossType = Literal[
     "xor_ss",
     "sigmoid",
     "slack_relu",
@@ -36,8 +39,37 @@ LOSS_CHOICES = [
     "leaky_relu",
     "elu",
     "softrelu",
-    "relu_integral",
 ]
+
+
+@dataclasses.dataclass
+class TrainConfig:
+    """Train XOR classification with different loss functions."""
+
+    loss: LossType
+    """Loss function to use for training."""
+    seed: int = 0
+    """Random seed."""
+    epochs: int = 1000
+    """Number of training epochs."""
+    lr: float = 0.05
+    """Learning rate."""
+    n_seeds: int = 3
+    """Number of random seeds to train with."""
+    n_samples: int = 121
+    """Number of samples (should be a perfect square)."""
+    show: bool = False
+    """Show plots after training."""
+    save: bool = True
+    """Save results to disk."""
+    integral: bool = False
+    """Use Monte-Carlo integral loss over the input domain."""
+    n_points: int = 128
+    """Number of MC sample points when --integral is set."""
+    wandb_project: str = "biolearn"
+    """Weights & Biases project name."""
+    log_interval: int = 100
+    """Log contour plots to wandb every N epochs."""
 
 
 def _clip_pytree(
@@ -240,6 +272,60 @@ def freeze_parameter_mask(nfc: NFC, parameters: List[str]) -> NFC:
     return mask
 
 
+def _log_contour_plots(model, plot_xs, plot_grid, ts, specification, epoch):
+    """Compute robustness over the grid and log contour plots to wandb."""
+    ros = _robustnesses(model, plot_xs, ts, specification, eps1=0.1, eps2=0.05, t1=5)
+    grid_x, grid_y = plot_grid
+    ros_grid = jax.nn.hard_tanh(ros.reshape(grid_x.shape))
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    vmax = 0.1
+    n_levels = 30
+
+    # Robustness contour
+    cf0 = axes[0].contourf(
+        grid_x,
+        grid_y,
+        ros_grid,
+        levels=jnp.linspace(-vmax, vmax, n_levels),
+        cmap="RdBu_r",
+        extend="both",
+    )
+    axes[0].contour(
+        grid_x,
+        grid_y,
+        ros_grid,
+        levels=[0.0],
+        colors=["#c0392b"],
+        linewidths=2.5,
+        zorder=6,
+    )
+    fig.colorbar(cf0, ax=axes[0])
+    axes[0].set_title(f"Robustness (epoch {epoch})")
+    axes[0].set_xlabel("x1")
+    axes[0].set_ylabel("x2")
+
+    # Loss contour (per-sample loss = relu(-robustness))
+    loss_grid = jax.nn.relu(-ros_grid)
+    cf1 = axes[1].contourf(
+        grid_x,
+        grid_y,
+        loss_grid,
+        levels=jnp.linspace(-vmax, vmax, n_levels),
+        cmap="RdBu_r",
+        extend="both",
+    )
+    fig.colorbar(cf1, ax=axes[1])
+    axes[1].set_title(f"Loss (epoch {epoch})")
+    axes[1].set_xlabel("x1")
+    axes[1].set_ylabel("x2")
+
+    fig.tight_layout()
+    if wandb.run is not None:
+        wandb.log({"contour_plots": wandb.Image(fig)}, commit=False)
+    plt.close(fig)
+
+
 def train(
     model: jt.PyTree,
     optimizer: optax.GradientTransformation,
@@ -250,6 +336,11 @@ def train(
     y_train: Optional[jt.Array] = None,
     freeze_mask: Optional[jt.PyTree] = None,
     verbose: bool = True,
+    log_interval: int = 0,
+    plot_xs: Optional[jt.Array] = None,
+    plot_grid: Optional[Tuple[jt.Array, jt.Array]] = None,
+    ts: Optional[jt.Array] = None,
+    specification: Optional[Callable] = None,
     *,
     key: jt.PRNGKeyArray,
 ) -> Tuple[jt.PyTree, List[float]]:
@@ -267,6 +358,11 @@ def train(
         freeze_mask: function masking trainable parameters or the model.
             All inexact arrays are trained by default
         verbose: whether to print training info.
+        log_interval: log contour plots to wandb every N epochs (0 = disabled).
+        plot_xs: grid points for contour plotting.
+        plot_grid: (grid_x, grid_y) meshgrid for contour plotting.
+        ts: time array for simulation (needed for contour plots).
+        specification: STL specification function (needed for contour plots).
         key: random key generator for the data loader
 
     Returns:
@@ -309,8 +405,16 @@ def train(
 
     loss_traj = []
 
+    do_plots = (
+        log_interval > 0
+        and plot_xs is not None
+        and plot_grid is not None
+        and ts is not None
+        and specification is not None
+    )
+
     pbar = tqdm(range(epochs), total=epochs, disable=not verbose)
-    for _ in pbar:
+    for epoch_idx in pbar:
         x_batch, y_batch = next(data_iter)
         try:
             loss, delta_mag, grad_mag, model, opt_state = batch_step(
@@ -322,6 +426,18 @@ def train(
             break
 
         loss_traj.append(float(loss))
+        if wandb.run is not None:
+            wandb.log(
+                {
+                    "loss": float(loss),
+                    "grad_mag": float(grad_mag),
+                    "delta_mag": float(delta_mag),
+                }
+            )
+        if do_plots and (epoch_idx + 1) % log_interval == 0:
+            _log_contour_plots(
+                model, plot_xs, plot_grid, ts, specification, epoch_idx + 1
+            )
         pbar.set_description(
             f"Loss: {loss:.4f}, Delta Mag: {delta_mag:.4f}, Grad Mag: {grad_mag:.4f}"
         )
@@ -409,28 +525,49 @@ def create_dataset(n_samples: int, max_val=1.0):
     return x_train, (grid_x, grid_y)
 
 
-def _make_loss_fn(loss_name: str, ts: jax.Array, *, key: Optional[jax.Array] = None):
+def _make_loss_fn(
+    loss_name: str,
+    ts: jax.Array,
+    *,
+    integral: bool = False,
+    n_points: int = 128,
+    key: Optional[jax.Array] = None,
+):
     """Create the loss function and optional model wrapper for the given loss type."""
+    # Build integral kwargs when MC sampling is requested.
+    integral_kwargs = {}
+    if integral:
+        assert key is not None, "key is required when integral=True"
+        integral_kwargs = dict(
+            domain=BoxDomain(jnp.array([0.0, 0.0]), jnp.array([1.0, 1.0])),
+            n_points=n_points,
+            key=key,
+        )
+
     if loss_name == "xor_ss":
         loss_fn = make_temporal_xor_ss_loss(ts, eps1=0.1, eps2=0.05, t1=5)
         wrap_model = None
     elif loss_name == "sigmoid":
-        loss_fn = make_sigmoid_loss(specification=xor_ss_spec, ts=ts)
+        loss_fn = make_sigmoid_loss(specification=xor_ss_spec, ts=ts, **integral_kwargs)
         wrap_model = None
     elif loss_name == "silu":
-        loss_fn = make_silu_loss(specification=xor_ss_spec, ts=ts)
+        loss_fn = make_silu_loss(specification=xor_ss_spec, ts=ts, **integral_kwargs)
         wrap_model = None
     elif loss_name == "logsumexp":
-        loss_fn = make_logsumexp_loss(specification=xor_ss_spec, ts=ts)
+        loss_fn = make_logsumexp_loss(
+            specification=xor_ss_spec, ts=ts, **integral_kwargs
+        )
         wrap_model = None
     elif loss_name == "softmax":
-        loss_fn = make_softmax_loss(specification=xor_ss_spec, ts=ts)
+        loss_fn = make_softmax_loss(specification=xor_ss_spec, ts=ts, **integral_kwargs)
         wrap_model = None
     elif loss_name == "leaky_relu":
-        loss_fn = make_leaky_relu_loss(specification=xor_ss_spec, ts=ts)
+        loss_fn = make_leaky_relu_loss(
+            specification=xor_ss_spec, ts=ts, **integral_kwargs
+        )
         wrap_model = None
     elif loss_name == "elu":
-        loss_fn = make_elu_loss(specification=xor_ss_spec, ts=ts)
+        loss_fn = make_elu_loss(specification=xor_ss_spec, ts=ts, **integral_kwargs)
         wrap_model = None
     elif loss_name == "slack_relu":
         loss_fn = slack_relu_ic_loss(specification=xor_ss_spec, ts=ts)
@@ -441,17 +578,8 @@ def _make_loss_fn(loss_name: str, ts: jax.Array, *, key: Optional[jax.Array] = N
     elif loss_name == "slack_softmax":
         loss_fn = slack_softmax_loss(specification=xor_ss_spec, ts=ts)
         wrap_model = SlackModel
-    elif loss_name == "relu_integral":
-        assert key is not None, "Must pass key to relu_integral"
-        domain = BoxDomain(jnp.array([0.0, 0.0]), jnp.array([1.0, 1.0]))
-        loss_fn = relu_integral_ic_loss(
-            domain=domain, specification=xor_ss_spec, ts=ts, n_points=128, key=key
-        )
-        wrap_model = None
     else:
-        raise ValueError(
-            f"Unknown loss function: {loss_name!r}. Choose from {LOSS_CHOICES}"
-        )
+        raise ValueError(f"Unknown loss function: {loss_name!r}")
     return loss_fn, wrap_model
 
 
@@ -462,6 +590,9 @@ def train_model(
     lr: float = 0.05,
     epochs: int = 1200,
     show: bool = False,
+    integral: bool = False,
+    n_points: int = 128,
+    log_interval: int = 0,
     *,
     key: jax.Array,
 ) -> Tuple[NFC, List[float]]:
@@ -473,18 +604,25 @@ def train_model(
         biosyst: the NFC to train
         x_train: dataset with the values for x.
         loss_name: which loss function to use (xor_ss, sigmoid, slack_relu).
+        integral: use Monte-Carlo integral loss.
+        n_points: number of MC sample points when integral is True.
         key: random key to use for training.
     Returns:
 
     """
     x_diff = x_train[:, 1] - x_train[:, 0]
     y_train = jax.nn.relu(x_diff - 0.1) + jax.nn.relu(-x_diff - 0.1)
-    grid = jnp.meshgrid(jnp.unique(x_train[:, 0]), jnp.unique(x_train[:, 1]))
 
     ts = jnp.arange(0, 20, 1.0)
+    x_plot = jnp.linspace(0, 1, 128)
+    xs, ys = jnp.meshgrid(x_plot, x_plot)
+    x_plot = jnp.stack([xs.flatten(), ys.flatten()], axis=-1)
+    grid = (xs, ys)
 
     loss_key, key = jax.random.split(key)
-    loss_fn, wrap_model = _make_loss_fn(loss_name, ts, key=loss_key)
+    loss_fn, wrap_model = _make_loss_fn(
+        loss_name, ts, integral=integral, n_points=n_points, key=loss_key
+    )
 
     trainable = wrap_model(biosyst) if wrap_model is not None else biosyst
 
@@ -506,6 +644,11 @@ def train_model(
             batch_size=x_train.shape[0],
             x_train=x_train,
             y_train=y_train,
+            log_interval=log_interval,
+            plot_xs=x_plot,
+            plot_grid=grid,
+            ts=ts,
+            specification=xor_ss_spec,
             key=key,
         )
         # Unwrap if we used a model wrapper
@@ -596,9 +739,32 @@ def run_training(
     lr: float,
     loss_name: str,
     show=False,
+    integral=False,
+    n_points=128,
+    wandb_project: Optional[str] = None,
+    seed_idx: int = 0,
+    log_interval: int = 0,
     *,
     key,
 ):
+    arch_str = "-".join(str(l) for l in layer_sizes)
+    integral_tag = "integral" if integral else "batch"
+    run_name = f"{loss_name}_{integral_tag}_arch{arch_str}_seed{seed_idx}"
+
+    wandb.init(
+        project=wandb_project,
+        name=run_name,
+        config={
+            "loss": loss_name,
+            "integral": integral,
+            "n_points": n_points,
+            "epochs": epochs,
+            "lr": lr,
+            "arch": layer_sizes,
+            "seed_idx": seed_idx,
+        },
+    )
+
     sk1, sk2 = jax.random.split(key, num=2)
     print("Dataset shape: ", x_train.shape)
     nfc = MoormanNFC(
@@ -612,8 +778,19 @@ def run_training(
     biosyst = ClassModel(nfc=nfc, k=k2, delta=1.0, w=w)
 
     trained_biosyst, loss_traj = train_model(
-        biosyst, x_train, loss_name=loss_name, epochs=epochs, lr=lr, show=show, key=sk2
+        biosyst,
+        x_train,
+        loss_name=loss_name,
+        epochs=epochs,
+        lr=lr,
+        show=show,
+        integral=integral,
+        n_points=n_points,
+        log_interval=log_interval,
+        key=sk2,
     )
+
+    wandb.finish()
     return trained_biosyst, loss_traj
 
 
@@ -626,6 +803,10 @@ def repeat_training(
     loss_name="xor_ss",
     save_path=None,
     show=False,
+    integral=False,
+    n_points=128,
+    wandb_project: Optional[str] = None,
+    log_interval: int = 0,
     *,
     key,
 ):
@@ -641,6 +822,11 @@ def repeat_training(
             x_train=x_train,
             key=ki,
             show=show,
+            integral=integral,
+            n_points=n_points,
+            wandb_project=wandb_project,
+            seed_idx=i,
+            log_interval=log_interval,
             w=5.0,
             k1=0.8,
             k2=0.8,
@@ -660,6 +846,10 @@ def analyze_layer_sizes(
     n=10,
     save=False,
     show=False,
+    integral=False,
+    n_points=128,
+    wandb_project: Optional[str] = None,
+    log_interval: int = 0,
     *,
     key,
 ):
@@ -683,6 +873,10 @@ def analyze_layer_sizes(
             loss_name=loss_name,
             save_path=model_save_path,
             show=show,
+            integral=integral,
+            n_points=n_points,
+            wandb_project=wandb_project,
+            log_interval=log_interval,
         )
 
         info_df = pd.DataFrame(info, columns=["Steps", "final loss"])
@@ -695,51 +889,27 @@ def analyze_layer_sizes(
     return all_info
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Train XOR classification with different loss functions"
-    )
-    parser.add_argument(
-        "--loss",
-        type=str,
-        choices=LOSS_CHOICES,
-        required=True,
-        help="Loss function to use for training",
-    )
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--epochs", type=int, default=1000)
-    parser.add_argument("--lr", type=float, default=0.05)
-    parser.add_argument("--n-seeds", type=int, default=3)
-    parser.add_argument(
-        "--n-samples",
-        type=int,
-        default=121,
-        help="Number of samples (should be a perfect square)",
-    )
-    parser.add_argument("--show", action="store_true")
-    parser.add_argument("--save", action="store_true", default=True)
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-
-    key = jax.random.PRNGKey(args.seed)
+def main(cfg: TrainConfig):
+    key = jax.random.PRNGKey(cfg.seed)
     key = jax.random.split(key, num=5)[-1]
 
     archs = [(2, 1), (2, 1, 1)]
 
-    x_train, _ = create_dataset(n_samples=args.n_samples, max_val=1.0)
+    x_train, _ = create_dataset(n_samples=cfg.n_samples, max_val=1.0)
 
     info = analyze_layer_sizes(
         archs,
         x_train=x_train,
-        epochs=args.epochs,
-        lr=args.lr,
-        loss_name=args.loss,
-        save=args.save,
-        show=args.show,
-        n=args.n_seeds,
+        epochs=cfg.epochs,
+        lr=cfg.lr,
+        loss_name=cfg.loss,
+        save=cfg.save,
+        show=cfg.show,
+        integral=cfg.integral,
+        n_points=cfg.n_points,
+        wandb_project=cfg.wandb_project,
+        log_interval=cfg.log_interval,
+        n=cfg.n_seeds,
         key=key,
     )
 
@@ -749,4 +919,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(TrainConfig))
