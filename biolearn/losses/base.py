@@ -61,7 +61,7 @@ def make_loss(
     if domain is not None:
         assert key is not None, "key is required when domain is set"
         _integral_fn = make_integral_loss(
-            integrand=group_loss,
+            weighting_fn=group_loss,
             domain=domain,
             specification=specification,
             ts=ts,
@@ -73,7 +73,7 @@ def make_loss(
             hash_val = jnp.bitwise_xor.reduce(
                 jax.lax.bitcast_convert_type(xs.flatten(), jnp.int32)
             )
-            step_key = jax.random.fold_in(key, hash_val)
+            step_key = jax.random.fold_in(key, hash_val.sum())
             return _integral_fn(step_key, system, n_points)
 
         return _loss_integral

@@ -41,6 +41,31 @@ LossType = Literal[
     "softrelu",
 ]
 
+ELEMENTWISE_LOSSES: dict[str, Callable] = {
+    "sigmoid": lambda r: jax.nn.sigmoid(-r),
+    "silu": lambda r: jax.nn.silu(-r),
+    "softmax": lambda r: jnp.expm1(-r) / jnp.max(jnp.expm1(-r)),
+    "logsumexp": lambda r: jnp.expm1(-r) / jnp.max(jnp.expm1(-r)),
+    "leaky_relu": lambda r: jax.nn.leaky_relu(-r),
+    "elu": lambda r: jax.nn.elu(-5.0 * r),
+    "xor_ss": lambda r: jax.nn.relu(-r),
+    "softrelu": lambda r: jax.nn.relu(-r) + 1e-2 * jax.nn.sigmoid(jax.nn.relu(r)),
+}
+
+
+def _get_elementwise_loss(loss_name: str, model=None) -> Callable:
+    """Return a per-element loss function ``r -> loss`` for the given loss name.
+
+    For slack-based losses the current slack value is read from *model*.
+    """
+    slack = getattr(model, "slack", None)
+    if loss_name == "slack_relu" and slack is not None:
+        return lambda r: jax.nn.relu(slack - r)
+    if loss_name == "slack_softmax" and slack is not None:
+        return lambda r: jnp.expm1(-r) / jnp.max(jnp.expm1(-r))
+
+    return ELEMENTWISE_LOSSES.get(loss_name, lambda r: jax.nn.relu(-r))
+
 
 @dataclasses.dataclass
 class TrainConfig:
@@ -272,7 +297,7 @@ def freeze_parameter_mask(nfc: NFC, parameters: List[str]) -> NFC:
     return mask
 
 
-def _log_contour_plots(model, plot_xs, plot_grid, ts, specification, epoch):
+def _log_contour_plots(model, plot_xs, plot_grid, ts, specification, epoch, loss_name):
     """Compute robustness over the grid and log contour plots to wandb."""
     ros = _robustnesses(model, plot_xs, ts, specification, eps1=0.1, eps2=0.05, t1=5)
     grid_x, grid_y = plot_grid
@@ -305,13 +330,14 @@ def _log_contour_plots(model, plot_xs, plot_grid, ts, specification, epoch):
     axes[0].set_xlabel("x1")
     axes[0].set_ylabel("x2")
 
-    # Loss contour (per-sample loss = relu(-robustness))
-    loss_grid = jax.nn.relu(-ros_grid)
+    # Loss contour (per-sample loss using the chosen loss function)
+    elem_loss = _get_elementwise_loss(loss_name, model)
+    loss_grid = elem_loss(ros_grid)
     cf1 = axes[1].contourf(
         grid_x,
         grid_y,
         loss_grid,
-        levels=jnp.linspace(-vmax, vmax, n_levels),
+        levels=n_levels,
         cmap="RdBu_r",
         extend="both",
     )
@@ -341,6 +367,7 @@ def train(
     plot_grid: Optional[Tuple[jt.Array, jt.Array]] = None,
     ts: Optional[jt.Array] = None,
     specification: Optional[Callable] = None,
+    loss_name: str = "",
     *,
     key: jt.PRNGKeyArray,
 ) -> Tuple[jt.PyTree, List[float]]:
@@ -363,6 +390,7 @@ def train(
         plot_grid: (grid_x, grid_y) meshgrid for contour plotting.
         ts: time array for simulation (needed for contour plots).
         specification: STL specification function (needed for contour plots).
+        loss_name: name of the loss function (for element-wise contour plotting).
         key: random key generator for the data loader
 
     Returns:
@@ -436,7 +464,7 @@ def train(
             )
         if do_plots and (epoch_idx + 1) % log_interval == 0:
             _log_contour_plots(
-                model, plot_xs, plot_grid, ts, specification, epoch_idx + 1
+                model, plot_xs, plot_grid, ts, specification, epoch_idx + 1, loss_name
             )
         pbar.set_description(
             f"Loss: {loss:.4f}, Delta Mag: {delta_mag:.4f}, Grad Mag: {grad_mag:.4f}"
@@ -649,6 +677,7 @@ def train_model(
             plot_grid=grid,
             ts=ts,
             specification=xor_ss_spec,
+            loss_name=loss_name,
             key=key,
         )
         # Unwrap if we used a model wrapper
