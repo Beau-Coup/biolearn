@@ -24,7 +24,7 @@ from biolearn import (
 from biolearn.losses import *
 from biolearn.losses.base import _robustnesses
 from biolearn.losses.slack_relu import SlackModel
-from biolearn.specifications import xor_ss_spec
+from biolearn.specifications import phi_xor_ss
 
 SS_CLASS_EXP_RESULTS_PATH = "data/results"
 
@@ -578,35 +578,35 @@ def _make_loss_fn(
         loss_fn = make_temporal_xor_ss_loss(ts, eps1=0.1, eps2=0.05, t1=5)
         wrap_model = None
     elif loss_name == "sigmoid":
-        loss_fn = make_sigmoid_loss(specification=xor_ss_spec, ts=ts, **integral_kwargs)
+        loss_fn = make_sigmoid_loss(specification=phi_xor_ss, ts=ts, **integral_kwargs)
         wrap_model = None
     elif loss_name == "silu":
-        loss_fn = make_silu_loss(specification=xor_ss_spec, ts=ts, **integral_kwargs)
+        loss_fn = make_silu_loss(specification=phi_xor_ss, ts=ts, **integral_kwargs)
         wrap_model = None
     elif loss_name == "logsumexp":
         loss_fn = make_logsumexp_loss(
-            specification=xor_ss_spec, ts=ts, **integral_kwargs
+            specification=phi_xor_ss, ts=ts, **integral_kwargs
         )
         wrap_model = None
     elif loss_name == "softmax":
-        loss_fn = make_softmax_loss(specification=xor_ss_spec, ts=ts, **integral_kwargs)
+        loss_fn = make_softmax_loss(specification=phi_xor_ss, ts=ts, **integral_kwargs)
         wrap_model = None
     elif loss_name == "leaky_relu":
         loss_fn = make_leaky_relu_loss(
-            specification=xor_ss_spec, ts=ts, **integral_kwargs
+            specification=phi_xor_ss, ts=ts, **integral_kwargs
         )
         wrap_model = None
     elif loss_name == "elu":
-        loss_fn = make_elu_loss(specification=xor_ss_spec, ts=ts, **integral_kwargs)
+        loss_fn = make_elu_loss(specification=phi_xor_ss, ts=ts, **integral_kwargs)
         wrap_model = None
     elif loss_name == "slack_relu":
-        loss_fn = slack_relu_ic_loss(specification=xor_ss_spec, ts=ts)
+        loss_fn = slack_relu_ic_loss(specification=phi_xor_ss, ts=ts)
         wrap_model = SlackModel
     elif loss_name == "softrelu":
-        loss_fn = make_softrelu_loss(specification=xor_ss_spec, ts=ts)
+        loss_fn = make_softrelu_loss(specification=phi_xor_ss, ts=ts)
         wrap_model = SlackModel
     elif loss_name == "slack_softmax":
-        loss_fn = slack_softmax_loss(specification=xor_ss_spec, ts=ts)
+        loss_fn = slack_softmax_loss(specification=phi_xor_ss, ts=ts)
         wrap_model = SlackModel
     else:
         raise ValueError(f"Unknown loss function: {loss_name!r}")
@@ -678,7 +678,7 @@ def train_model(
             plot_xs=x_plot,
             plot_grid=grid,
             ts=ts,
-            specification=xor_ss_spec,
+            specification=phi_xor_ss,
             loss_name=loss_name,
             key=key,
         )
@@ -707,7 +707,7 @@ def train_model(
             x_traj = jnp.repeat(x_traj, repeats=y_ss_i.shape[0], axis=0)
             y_out = y_ss_i[:, -1][:, None]
             traj = jnp.concatenate([x_traj, y_out], axis=1)
-            return xor_ss_spec(traj, eps1=0.1, eps2=0.05, t1=5)
+            return phi_xor_ss(traj, eps1=0.1, eps2=0.05, t1=5)
 
         ros = jax.vmap(_run_single)(x_batch)
         satisfied = ros >= 0.0
