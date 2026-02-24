@@ -765,7 +765,7 @@ def train_model(
         if loss_name == "slack_relu":
             print(
                 "SlackReLU optimized margin C="
-                f"{float(trained_model.slack):.6g}, C={SLACK_RELU_C:.6g}"
+                f"{float(trained_model.slack):.6g}"
             )
         # Unwrap if we used a model wrapper
         if wrap_model is not None:
