@@ -11,6 +11,9 @@ def phi_xor_ss(
     eps1: float = 0.1,
     eps2: float = 0.05,
     t1: int = 5,
+    semantics: str = "dgmsr",
+    dgmsr_p: int = 3,
+    smooth_temperature: float = 1.0,
 ) -> jax.Array:
     """
     STL specification implementing an XOR classification
@@ -35,7 +38,19 @@ def phi_xor_ss(
     phi2 = pystl.Eventually(pystl.Always(err_lowest))
     phi = phi1 & phi2
 
-    semantics = pystl.create_semantics("dgmsr", backend="jax", p=3)
-    ro = phi.evaluate(err, semantics, t=0)
-    return jnp.asarray(ro).squeeze()
+    semantics_kwargs: dict[str, object] = {}
+    if semantics == "dgmsr":
+        semantics_kwargs["p"] = int(dgmsr_p)
+    elif semantics == "smooth":
+        semantics_kwargs["temperature"] = float(smooth_temperature)
+    elif semantics in {"classical", "agm"}:
+        pass
+    else:
+        raise ValueError(
+            f"Unsupported semantics {semantics!r}. "
+            "Expected one of: 'dgmsr', 'smooth', 'classical', 'agm'."
+        )
 
+    semantics_impl = pystl.create_semantics(semantics, backend="jax", **semantics_kwargs)
+    ro = phi.evaluate(err, semantics_impl, t=0)
+    return jnp.asarray(ro).squeeze()

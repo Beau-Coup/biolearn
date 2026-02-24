@@ -31,7 +31,7 @@ SS_CLASS_EXP_RESULTS_PATH = "data/results"
 jax.config.update("jax_enable_x64", True)
 
 LossType = Literal[
-    "xor_ss",
+    "relu",
     "sigmoid",
     "slack_relu",
     "silu",
@@ -50,7 +50,7 @@ ELEMENTWISE_LOSSES: dict[str, Callable] = {
     "logsumexp": lambda r: jnp.expm1(-r) / jnp.max(jnp.expm1(-r)),
     "leaky_relu": lambda r: jax.nn.leaky_relu(-r),
     "elu": lambda r: jax.nn.elu(-5.0 * r),
-    "xor_ss": lambda r: jax.nn.relu(-r),
+    "relu": lambda r: jax.nn.relu(-r),
     "softrelu": lambda r: jax.nn.relu(-r) + 1e-2 * jax.nn.sigmoid(jax.nn.relu(r)),
 }
 
@@ -75,6 +75,12 @@ class TrainConfig:
 
     loss: LossType
     """Loss function to use for training."""
+    semantics: Literal["dgmsr", "smooth", "classical", "agm"] = "dgmsr"
+    """PySTL robustness semantics used by `phi_xor_ss`."""
+    dgmsr_p: int = 3
+    """D-GMSR 'p' parameter when `--semantics dgmsr`."""
+    smooth_temperature: float = 1.0
+    """Temperature used when `--semantics smooth`."""
     seed: int = 0
     """Random seed."""
     epochs: int = 1000
@@ -455,15 +461,22 @@ def train(
             traceback.print_exc()
             break
 
-        loss_traj.append(float(loss))
+        loss_val = float(loss)
+        loss_traj.append(loss_val)
         if wandb.run is not None:
             wandb.log(
                 {
-                    "loss": float(loss),
+                    "loss": loss_val,
                     "grad_mag": float(grad_mag),
                     "delta_mag": float(delta_mag),
                 }
             )
+        if loss_val <= 0.0:
+            if verbose:
+                tqdm.write(
+                    f"Early stopping: loss reached 0 at epoch {epoch_idx + 1}."
+                )
+            break
         if do_plots and (epoch_idx + 1) % log_interval == 0:
             _log_contour_plots(
                 model, plot_xs, plot_grid, ts, specification, epoch_idx + 1, loss_name
@@ -562,6 +575,9 @@ def _make_loss_fn(
     integral: bool = False,
     n_points: int = 128,
     key: Optional[jax.Array] = None,
+    semantics: str = "dgmsr",
+    dgmsr_p: int = 3,
+    smooth_temperature: float = 1.0,
 ):
     """Create the loss function and optional model wrapper for the given loss type."""
     # Build integral kwargs when MC sampling is requested.
@@ -574,39 +590,55 @@ def _make_loss_fn(
             key=key,
         )
 
-    if loss_name == "xor_ss":
-        loss_fn = make_temporal_xor_ss_loss(ts, eps1=0.1, eps2=0.05, t1=5)
+    spec_kwargs = dict(
+        semantics=semantics,
+        dgmsr_p=dgmsr_p,
+        smooth_temperature=smooth_temperature,
+    )
+
+    if loss_name == "relu":
+        loss_fn = make_relu_loss(
+            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+        )
         wrap_model = None
     elif loss_name == "sigmoid":
-        loss_fn = make_sigmoid_loss(specification=phi_xor_ss, ts=ts, **integral_kwargs)
+        loss_fn = make_sigmoid_loss(
+            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+        )
         wrap_model = None
     elif loss_name == "silu":
-        loss_fn = make_silu_loss(specification=phi_xor_ss, ts=ts, **integral_kwargs)
+        loss_fn = make_silu_loss(
+            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+        )
         wrap_model = None
     elif loss_name == "logsumexp":
         loss_fn = make_logsumexp_loss(
-            specification=phi_xor_ss, ts=ts, **integral_kwargs
+            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
         )
         wrap_model = None
     elif loss_name == "softmax":
-        loss_fn = make_softmax_loss(specification=phi_xor_ss, ts=ts, **integral_kwargs)
+        loss_fn = make_softmax_loss(
+            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+        )
         wrap_model = None
     elif loss_name == "leaky_relu":
         loss_fn = make_leaky_relu_loss(
-            specification=phi_xor_ss, ts=ts, **integral_kwargs
+            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
         )
         wrap_model = None
     elif loss_name == "elu":
-        loss_fn = make_elu_loss(specification=phi_xor_ss, ts=ts, **integral_kwargs)
+        loss_fn = make_elu_loss(
+            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+        )
         wrap_model = None
     elif loss_name == "slack_relu":
-        loss_fn = slack_relu_ic_loss(specification=phi_xor_ss, ts=ts)
+        loss_fn = slack_relu_ic_loss(specification=phi_xor_ss, ts=ts, **spec_kwargs)
         wrap_model = SlackModel
     elif loss_name == "softrelu":
-        loss_fn = make_softrelu_loss(specification=phi_xor_ss, ts=ts)
+        loss_fn = make_softrelu_loss(specification=phi_xor_ss, ts=ts, **spec_kwargs)
         wrap_model = SlackModel
     elif loss_name == "slack_softmax":
-        loss_fn = slack_softmax_loss(specification=phi_xor_ss, ts=ts)
+        loss_fn = slack_softmax_loss(specification=phi_xor_ss, ts=ts, **spec_kwargs)
         wrap_model = SlackModel
     else:
         raise ValueError(f"Unknown loss function: {loss_name!r}")
@@ -617,13 +649,16 @@ def train_model(
     biosyst: ClassModel,
     x_train: jax.Array,
     loss_name: str,
+    *,
+    semantics: str = "dgmsr",
+    dgmsr_p: int = 3,
+    smooth_temperature: float = 1.0,
     lr: float = 0.05,
     epochs: int = 1200,
     show: bool = False,
     integral: bool = False,
     n_points: int = 128,
     log_interval: int = 0,
-    *,
     key: jax.Array,
 ) -> Tuple[NFC, List[float]]:
     """
@@ -651,7 +686,14 @@ def train_model(
 
     loss_key, key = jax.random.split(key)
     loss_fn, wrap_model = _make_loss_fn(
-        loss_name, ts, integral=integral, n_points=n_points, key=loss_key
+        loss_name,
+        ts,
+        integral=integral,
+        n_points=n_points,
+        key=loss_key,
+        semantics=semantics,
+        dgmsr_p=dgmsr_p,
+        smooth_temperature=smooth_temperature,
     )
 
     trainable = wrap_model(biosyst) if wrap_model is not None else biosyst
@@ -707,7 +749,15 @@ def train_model(
             x_traj = jnp.repeat(x_traj, repeats=y_ss_i.shape[0], axis=0)
             y_out = y_ss_i[:, -1][:, None]
             traj = jnp.concatenate([x_traj, y_out], axis=1)
-            return phi_xor_ss(traj, eps1=0.1, eps2=0.05, t1=5)
+            return phi_xor_ss(
+                traj,
+                eps1=0.1,
+                eps2=0.05,
+                t1=5,
+                semantics=semantics,
+                dgmsr_p=dgmsr_p,
+                smooth_temperature=smooth_temperature,
+            )
 
         ros = jax.vmap(_run_single)(x_batch)
         satisfied = ros >= 0.0
@@ -777,6 +827,9 @@ def run_training(
     log_interval: int = 0,
     *,
     key,
+    semantics: str = "dgmsr",
+    dgmsr_p: int = 3,
+    smooth_temperature: float = 1.0,
 ):
     arch_str = "-".join(str(l) for l in layer_sizes)
     integral_tag = "integral" if integral else "batch"
@@ -812,6 +865,9 @@ def run_training(
         biosyst,
         x_train,
         loss_name=loss_name,
+        semantics=semantics,
+        dgmsr_p=dgmsr_p,
+        smooth_temperature=smooth_temperature,
         epochs=epochs,
         lr=lr,
         show=show,
@@ -841,6 +897,9 @@ def repeat_training(
     log_interval: int = 0,
     *,
     key,
+    semantics: str = "dgmsr",
+    dgmsr_p: int = 3,
+    smooth_temperature: float = 1.0,
 ):
     keys = jax.random.split(key, num=n)
 
@@ -863,6 +922,9 @@ def repeat_training(
             w=5.0,
             k1=0.8,
             k2=0.8,
+            semantics=semantics,
+            dgmsr_p=dgmsr_p,
+            smooth_temperature=smooth_temperature,
         )
 
         info.update(
@@ -918,6 +980,9 @@ def analyze_layer_sizes(
     log_interval: int = 0,
     *,
     key,
+    semantics: str = "dgmsr",
+    dgmsr_p: int = 3,
+    smooth_temperature: float = 1.0,
 ):
     all_info = []
     for layer_sizes in layer_sizes_list:
@@ -943,6 +1008,9 @@ def analyze_layer_sizes(
             n_points=n_points,
             wandb_project=wandb_project,
             log_interval=log_interval,
+            semantics=semantics,
+            dgmsr_p=dgmsr_p,
+            smooth_temperature=smooth_temperature,
         )
 
         info_df = pd.DataFrame(info, columns=["Steps", "final loss"])
@@ -977,6 +1045,9 @@ def main(cfg: TrainConfig):
         log_interval=cfg.log_interval,
         n=cfg.n_seeds,
         key=key,
+        semantics=cfg.semantics,
+        dgmsr_p=cfg.dgmsr_p,
+        smooth_temperature=cfg.smooth_temperature,
     )
 
     import code
