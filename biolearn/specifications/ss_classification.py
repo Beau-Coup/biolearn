@@ -2,24 +2,40 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import pystl
 
 
-def xor_ss_spec(
+def phi_xor_ss(
     traj: jax.Array,
     *,
     eps1: float = 0.1,
     eps2: float = 0.05,
     t1: int = 5,
 ) -> jax.Array:
-    """Simple steady-state XOR robustness for a trajectory.
+    """
+    STL specification implementing an XOR classification
+    at steady state.
+
+    Error should be less than ep1 at t1, 
+    and eventually less than eps2.
 
     Expects traj shape (T, 3) with columns [x1, x2, y].
     """
-    x1 = traj[0, 0]
-    x2 = traj[0, 1]
-    y_target = jax.nn.relu(jnp.abs(x2 - x1) - eps1)
+    x_diff = traj[:, 1] - traj[:, 0]
+    y_true = jax.nn.relu(x_diff - 0.1) + jax.nn.relu(-x_diff - 0.1)
+    y_pred = traj[:, 2]
+    err = jnp.abs(y_true - y_pred)
 
-    idx = min(max(int(t1), 0), traj.shape[0] - 1)
-    y_pred = traj[idx, 2]
+    interval = (0, int(t1)) if t1 is not None else (0, None)
 
-    return eps2 - jnp.abs(y_pred - y_target)
+    err_low = pystl.Predicate("err<eps1", fn=lambda sig, t: eps1 - sig[t])
+    err_lowest = pystl.Predicate("err<eps2", fn=lambda sig, t: eps2 - sig[t])
+
+    phi1 = pystl.Eventually(pystl.Always(err_low), interval=interval)
+    phi2 = pystl.Eventually(pystl.Always(err_lowest))
+    phi = phi1 & phi2
+
+    semantics = pystl.create_semantics("dgmsr", backend="jax", p=3)
+    ro = phi.evaluate(err, semantics, t=0)
+    return jnp.asarray(ro).squeeze()
+
