@@ -19,6 +19,7 @@ def _activation_loss_factory(group_loss):
 
 
 activations = {
+    "relu": lambda r: jax.nn.relu(-r).mean(),
     "sigmoid": lambda r: jax.nn.sigmoid(-r).mean(),
     "swish": lambda r: jax.nn.swish(-r).mean(),
     "silu": lambda r: jax.nn.silu(-r).mean(),
