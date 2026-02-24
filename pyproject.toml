@@ -14,10 +14,14 @@ dependencies = [
     "jax>=0.9.0",
     "numpy>=2.4.1",
     "optax>=0.2.7",
+    "pystl",
 ]
 
 [tool.setuptools]
 packages = ["biolearn"]
+
+[tool.uv.sources]
+pystl = { git = "https://github.com/ericpalto/PySTL.git" }
 
 [dependency-groups]
 dev = [
