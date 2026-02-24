@@ -79,6 +79,8 @@ class TrainConfig:
     """Loss function to use for training."""
     spec: SpecType = "phi_xor_fast"
     """STL specification to evaluate on trajectories."""
+    early_stop: Optional[float] = None
+    """Stop early when the scalar loss is <= this value."""
     semantics: Literal["dgmsr", "smooth", "classical", "agm"] = "dgmsr"
     """PySTL robustness semantics used by `phi_xor_ss`."""
     dgmsr_p: int = 3
@@ -389,6 +391,7 @@ def train(
     specification: Optional[Callable] = None,
     specification_kwargs: Optional[dict[str, Any]] = None,
     loss_name: str = "",
+    early_stop: Optional[float] = None,
     *,
     key: jt.PRNGKeyArray,
 ) -> Tuple[jt.PyTree, List[float]]:
@@ -424,8 +427,6 @@ def train(
 
     def get_loss(_diff_model, _static_model, _x_batch):
         _joint_model = eqx.combine(_diff_model, _static_model)
-        # Loss functions from `biolearn.losses` follow the signature
-        # (system, xs, _ys). `_ys` is unused for STL losses.
         _ys_dummy = jnp.zeros((_x_batch.shape[0],), dtype=float)
         _loss = loss_fn(_joint_model, _x_batch, _ys_dummy)
         return _loss
@@ -487,10 +488,12 @@ def train(
                     "delta_mag": float(delta_mag),
                 }
             )
-        if loss_val <= 0.0:
+        if early_stop is not None and loss_val <= early_stop:
             if verbose:
                 tqdm.write(
-                    f"Early stopping: loss reached 0 at epoch {epoch_idx + 1}."
+                    "Early stopping: loss reached "
+                    f"{loss_val:.6g} <= {float(early_stop):.6g} "
+                    f"at epoch {epoch_idx + 1}."
                 )
             break
         if do_plots and (epoch_idx + 1) % log_interval == 0:
@@ -682,6 +685,7 @@ def train_model(
     loss_name: str,
     *,
     spec: SpecType = "phi_xor_fast",
+    early_stop: Optional[float] = None,
     semantics: str = "dgmsr",
     dgmsr_p: int = 3,
     smooth_temperature: float = 1.0,
@@ -755,8 +759,14 @@ def train_model(
             specification=specification,
             specification_kwargs=spec_kwargs,
             loss_name=loss_name,
+            early_stop=early_stop,
             key=key,
         )
+        if loss_name == "slack_relu":
+            print(
+                "SlackReLU optimized margin C="
+                f"{float(trained_model.slack):.6g}, C={SLACK_RELU_C:.6g}"
+            )
         # Unwrap if we used a model wrapper
         if wrap_model is not None:
             trained_syst = trained_model.model
@@ -853,6 +863,7 @@ def run_training(
     *,
     key,
     spec: SpecType = "phi_xor_fast",
+    early_stop: Optional[float] = None,
     semantics: str = "dgmsr",
     dgmsr_p: int = 3,
     smooth_temperature: float = 1.0,
@@ -892,6 +903,7 @@ def run_training(
         x_train,
         loss_name=loss_name,
         spec=spec,
+        early_stop=early_stop,
         semantics=semantics,
         dgmsr_p=dgmsr_p,
         smooth_temperature=smooth_temperature,
@@ -925,6 +937,7 @@ def repeat_training(
     *,
     key,
     spec: SpecType = "phi_xor_fast",
+    early_stop: Optional[float] = None,
     semantics: str = "dgmsr",
     dgmsr_p: int = 3,
     smooth_temperature: float = 1.0,
@@ -951,6 +964,7 @@ def repeat_training(
             k1=0.8,
             k2=0.8,
             spec=spec,
+            early_stop=early_stop,
             semantics=semantics,
             dgmsr_p=dgmsr_p,
             smooth_temperature=smooth_temperature,
@@ -1010,6 +1024,7 @@ def analyze_layer_sizes(
     *,
     key,
     spec: SpecType = "phi_xor_fast",
+    early_stop: Optional[float] = None,
     semantics: str = "dgmsr",
     dgmsr_p: int = 3,
     smooth_temperature: float = 1.0,
@@ -1039,6 +1054,7 @@ def analyze_layer_sizes(
             wandb_project=wandb_project,
             log_interval=log_interval,
             spec=spec,
+            early_stop=early_stop,
             semantics=semantics,
             dgmsr_p=dgmsr_p,
             smooth_temperature=smooth_temperature,
@@ -1077,6 +1093,7 @@ def main(cfg: TrainConfig):
         n=cfg.n_seeds,
         key=key,
         spec=cfg.spec,
+        early_stop=cfg.early_stop,
         semantics=cfg.semantics,
         dgmsr_p=cfg.dgmsr_p,
         smooth_temperature=cfg.smooth_temperature,
