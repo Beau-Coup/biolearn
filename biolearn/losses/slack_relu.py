@@ -37,7 +37,7 @@ class SlackModel(eqx.Module):
 
     def __init__(self, model: BioSyst):
         self.model = model
-        self.slack = jnp.zeros(()) - 10.0
+        self.slack = jnp.asarray(0.1)
 
     def simulate(self, *args, **kwargs):
         return self.model.simulate(*args, **kwargs)
