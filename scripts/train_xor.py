@@ -7,7 +7,9 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jaxtyping as jt
+import matplotlib.colors
 import matplotlib.pyplot as plt
+import numpy as np
 import optax
 import pandas as pd
 import tyro
@@ -820,6 +822,7 @@ def run_training(
     )
 
     wandb.finish()
+
     return trained_biosyst, loss_traj
 
 
@@ -841,7 +844,8 @@ def repeat_training(
 ):
     keys = jax.random.split(key, num=n)
 
-    info = []
+    info = {}
+    all_params = []
     for i, ki in enumerate(keys):
         trained_sim, loss_traj = run_training(
             layer_sizes,
@@ -861,7 +865,40 @@ def repeat_training(
             k2=0.8,
         )
 
-        info.append([len(loss_traj), loss_traj[-1] if loss_traj else float(jnp.inf)])
+        info.update(
+            {f"{i}": [len(loss_traj), loss_traj[-1] if loss_traj else float(jnp.inf)]}
+        )
+        leaves = jax.tree_util.tree_leaves(
+            eqx.filter(trained_sim, eqx.is_inexact_array)
+        )
+        flat_params = jnp.concatenate([l.flatten() for l in leaves])
+        all_params.append(flat_params)
+
+    # Log 3D point cloud of learned parameters to wandb
+    if wandb_project and all_params:
+        n_models = len(all_params)
+        all_points = []
+        for i, params in enumerate(all_params):
+            n_usable = ((len(params) + 3) // 3) * 3
+            pad = n_usable - len(params)
+            params = jnp.concatenate([params, jnp.zeros(pad)])
+            pts = params.reshape(-1, 3)
+
+            # Color: fixed hue (blue), varying brightness across models
+            v = 0.4 + 0.6 * i / max(n_models - 1, 1)
+            h = 0.4 + 0.6 * i / max(n_models - 1, 1)
+            rgb = matplotlib.colors.hsv_to_rgb([h, 0.8, v])
+            rgb_255 = (jnp.array(rgb) * 255).astype(jnp.int32)
+            colors = jnp.tile(rgb_255, (pts.shape[0], 1))
+            all_points.append(jnp.concatenate([pts, colors], axis=1))
+
+        point_cloud = jnp.concatenate(all_points, axis=0)
+        integral_tag = "integral" if integral else "nointegral"
+        arch_str = str(list(layer_sizes))
+        run_name = f"{loss_name}_{integral_tag}_arch{arch_str}_params3d"
+        wandb.init(project=wandb_project, name=run_name)
+        wandb.log({"params_3d": wandb.Object3D.from_numpy(np.array(point_cloud))})
+        wandb.finish()
 
     return info
 
