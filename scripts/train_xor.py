@@ -24,7 +24,7 @@ from biolearn import (
 from biolearn.losses import *
 from biolearn.losses.base import _robustnesses
 from biolearn.losses.slack_relu import SlackModel
-from biolearn.specifications import phi_xor_ss
+from biolearn.specifications.ss_classification import phi_xor_fast, phi_xor_ss
 
 SS_CLASS_EXP_RESULTS_PATH = "data/results"
 
@@ -42,6 +42,8 @@ LossType = Literal[
     "elu",
     "softrelu",
 ]
+
+SpecType = Literal["phi_xor_ss", "phi_xor_fast"]
 
 ELEMENTWISE_LOSSES: dict[str, Callable] = {
     "sigmoid": lambda r: jax.nn.sigmoid(-r),
@@ -75,6 +77,8 @@ class TrainConfig:
 
     loss: LossType
     """Loss function to use for training."""
+    spec: SpecType = "phi_xor_fast"
+    """STL specification to evaluate on trajectories."""
     semantics: Literal["dgmsr", "smooth", "classical", "agm"] = "dgmsr"
     """PySTL robustness semantics used by `phi_xor_ss`."""
     dgmsr_p: int = 3
@@ -305,9 +309,18 @@ def freeze_parameter_mask(nfc: NFC, parameters: List[str]) -> NFC:
     return mask
 
 
-def _log_contour_plots(model, plot_xs, plot_grid, ts, specification, epoch, loss_name):
+def _log_contour_plots(
+    model,
+    plot_xs,
+    plot_grid,
+    ts,
+    specification,
+    specification_kwargs,
+    epoch,
+    loss_name,
+):
     """Compute robustness over the grid and log contour plots to wandb."""
-    ros = _robustnesses(model, plot_xs, ts, specification, eps1=0.1, eps2=0.05, t1=5)
+    ros = _robustnesses(model, plot_xs, ts, specification, **specification_kwargs)
     grid_x, grid_y = plot_grid
     ros_grid = jax.nn.hard_tanh(ros.reshape(grid_x.shape))
 
@@ -367,7 +380,6 @@ def train(
     batch_size: int,
     loss_fn: Callable[[jt.PyTree, jt.Array, jt.Array], jt.Scalar],
     x_train: jt.Array,
-    y_train: Optional[jt.Array] = None,
     freeze_mask: Optional[jt.PyTree] = None,
     verbose: bool = True,
     log_interval: int = 0,
@@ -375,6 +387,7 @@ def train(
     plot_grid: Optional[Tuple[jt.Array, jt.Array]] = None,
     ts: Optional[jt.Array] = None,
     specification: Optional[Callable] = None,
+    specification_kwargs: Optional[dict[str, Any]] = None,
     loss_name: str = "",
     *,
     key: jt.PRNGKeyArray,
@@ -409,18 +422,21 @@ def train(
 
     freeze_mask = eqx.is_inexact_array if freeze_mask is None else freeze_mask
 
-    def get_loss(_diff_model, _static_model, _x_batch, _y_batch):
+    def get_loss(_diff_model, _static_model, _x_batch):
         _joint_model = eqx.combine(_diff_model, _static_model)
-        _loss = loss_fn(_joint_model, _x_batch, _y_batch)
+        # Loss functions from `biolearn.losses` follow the signature
+        # (system, xs, _ys). `_ys` is unused for STL losses.
+        _ys_dummy = jnp.zeros((_x_batch.shape[0],), dtype=float)
+        _loss = loss_fn(_joint_model, _x_batch, _ys_dummy)
         return _loss
 
     @eqx.filter_jit
-    def batch_step(_model, _x_batch, _y_batch, _optim_state):
+    def batch_step(_model, _x_batch, _optim_state):
         _diff_model, _static_model = eqx.partition(
             _model, freeze_mask, is_leaf=eqx.is_inexact_array
         )
         _loss, _grads = eqx.filter_value_and_grad(get_loss)(
-            _diff_model, _static_model, _x_batch, _y_batch
+            _diff_model, _static_model, _x_batch
         )
         _updates, _new_optim_state = optimizer.update(
             _grads,
@@ -428,15 +444,14 @@ def train(
             _diff_model,
             value=_loss,
             grad=_grads,
-            value_fn=lambda _x: get_loss(_x, _static_model, _x_batch, _y_batch),
+            value_fn=lambda _x: get_loss(_x, _static_model, _x_batch),
         )
         _new_model = eqx.apply_updates(_model, _updates)
         _delta = compute_difference(_model, _new_model)
         _grad_mag = compute_grad_mag(_grads)
         return _loss, _delta, _grad_mag, _new_model, _new_optim_state
 
-    y_train = y_train if y_train is not None else jnp.zeros(x_train.shape[0])
-    data_iter = dataloader((x_train, y_train), batch_size, key=key)
+    data_iter = dataloader((x_train,), batch_size, key=key)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
     loss_traj = []
@@ -448,13 +463,14 @@ def train(
         and ts is not None
         and specification is not None
     )
+    specification_kwargs = {} if specification_kwargs is None else specification_kwargs
 
     pbar = tqdm(range(epochs), total=epochs, disable=not verbose)
     for epoch_idx in pbar:
-        x_batch, y_batch = next(data_iter)
+        (x_batch,) = next(data_iter)
         try:
             loss, delta_mag, grad_mag, model, opt_state = batch_step(
-                model, x_batch, y_batch, opt_state
+                model, x_batch, opt_state
             )
         except Exception:  # pylint: disable=broad-except
             tqdm.write(f"Stopped due to error raised: {epochs} epochs")
@@ -479,7 +495,14 @@ def train(
             break
         if do_plots and (epoch_idx + 1) % log_interval == 0:
             _log_contour_plots(
-                model, plot_xs, plot_grid, ts, specification, epoch_idx + 1, loss_name
+                model,
+                plot_xs,
+                plot_grid,
+                ts,
+                specification,
+                specification_kwargs,
+                epoch_idx + 1,
+                loss_name,
             )
         pbar.set_description(
             f"Loss: {loss:.4f}, Delta Mag: {delta_mag:.4f}, Grad Mag: {grad_mag:.4f}"
@@ -575,6 +598,7 @@ def _make_loss_fn(
     integral: bool = False,
     n_points: int = 128,
     key: Optional[jax.Array] = None,
+    spec: SpecType = "phi_xor_fast",
     semantics: str = "dgmsr",
     dgmsr_p: int = 3,
     smooth_temperature: float = 1.0,
@@ -596,53 +620,60 @@ def _make_loss_fn(
         smooth_temperature=smooth_temperature,
     )
 
+    if spec == "phi_xor_fast":
+        specification = phi_xor_fast
+    elif spec == "phi_xor_ss":
+        specification = phi_xor_ss
+    else:
+        raise ValueError(f"Unknown specification: {spec!r}")
+
     if loss_name == "relu":
         loss_fn = make_relu_loss(
-            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+            specification=specification, ts=ts, **spec_kwargs, **integral_kwargs
         )
         wrap_model = None
     elif loss_name == "sigmoid":
         loss_fn = make_sigmoid_loss(
-            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+            specification=specification, ts=ts, **spec_kwargs, **integral_kwargs
         )
         wrap_model = None
     elif loss_name == "silu":
         loss_fn = make_silu_loss(
-            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+            specification=specification, ts=ts, **spec_kwargs, **integral_kwargs
         )
         wrap_model = None
     elif loss_name == "logsumexp":
         loss_fn = make_logsumexp_loss(
-            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+            specification=specification, ts=ts, **spec_kwargs, **integral_kwargs
         )
         wrap_model = None
     elif loss_name == "softmax":
         loss_fn = make_softmax_loss(
-            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+            specification=specification, ts=ts, **spec_kwargs, **integral_kwargs
         )
         wrap_model = None
     elif loss_name == "leaky_relu":
         loss_fn = make_leaky_relu_loss(
-            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+            specification=specification, ts=ts, **spec_kwargs, **integral_kwargs
         )
         wrap_model = None
     elif loss_name == "elu":
         loss_fn = make_elu_loss(
-            specification=phi_xor_ss, ts=ts, **spec_kwargs, **integral_kwargs
+            specification=specification, ts=ts, **spec_kwargs, **integral_kwargs
         )
         wrap_model = None
     elif loss_name == "slack_relu":
-        loss_fn = slack_relu_ic_loss(specification=phi_xor_ss, ts=ts, **spec_kwargs)
+        loss_fn = slack_relu_ic_loss(specification=specification, ts=ts, **spec_kwargs)
         wrap_model = SlackModel
     elif loss_name == "softrelu":
-        loss_fn = make_softrelu_loss(specification=phi_xor_ss, ts=ts, **spec_kwargs)
+        loss_fn = make_softrelu_loss(specification=specification, ts=ts, **spec_kwargs)
         wrap_model = SlackModel
     elif loss_name == "slack_softmax":
-        loss_fn = slack_softmax_loss(specification=phi_xor_ss, ts=ts, **spec_kwargs)
+        loss_fn = slack_softmax_loss(specification=specification, ts=ts, **spec_kwargs)
         wrap_model = SlackModel
     else:
         raise ValueError(f"Unknown loss function: {loss_name!r}")
-    return loss_fn, wrap_model
+    return loss_fn, wrap_model, specification, spec_kwargs
 
 
 def train_model(
@@ -650,6 +681,7 @@ def train_model(
     x_train: jax.Array,
     loss_name: str,
     *,
+    spec: SpecType = "phi_xor_fast",
     semantics: str = "dgmsr",
     dgmsr_p: int = 3,
     smooth_temperature: float = 1.0,
@@ -685,12 +717,13 @@ def train_model(
     grid = (xs, ys)
 
     loss_key, key = jax.random.split(key)
-    loss_fn, wrap_model = _make_loss_fn(
+    loss_fn, wrap_model, specification, spec_kwargs = _make_loss_fn(
         loss_name,
         ts,
         integral=integral,
         n_points=n_points,
         key=loss_key,
+        spec=spec,
         semantics=semantics,
         dgmsr_p=dgmsr_p,
         smooth_temperature=smooth_temperature,
@@ -715,12 +748,12 @@ def train_model(
             epochs=epochs,
             batch_size=x_train.shape[0],
             x_train=x_train,
-            y_train=y_train,
             log_interval=log_interval,
             plot_xs=x_plot,
             plot_grid=grid,
             ts=ts,
-            specification=phi_xor_ss,
+            specification=specification,
+            specification_kwargs=spec_kwargs,
             loss_name=loss_name,
             key=key,
         )
@@ -749,15 +782,7 @@ def train_model(
             x_traj = jnp.repeat(x_traj, repeats=y_ss_i.shape[0], axis=0)
             y_out = y_ss_i[:, -1][:, None]
             traj = jnp.concatenate([x_traj, y_out], axis=1)
-            return phi_xor_ss(
-                traj,
-                eps1=0.1,
-                eps2=0.05,
-                t1=5,
-                semantics=semantics,
-                dgmsr_p=dgmsr_p,
-                smooth_temperature=smooth_temperature,
-            )
+            return specification(traj, **spec_kwargs)
 
         ros = jax.vmap(_run_single)(x_batch)
         satisfied = ros >= 0.0
@@ -827,6 +852,7 @@ def run_training(
     log_interval: int = 0,
     *,
     key,
+    spec: SpecType = "phi_xor_fast",
     semantics: str = "dgmsr",
     dgmsr_p: int = 3,
     smooth_temperature: float = 1.0,
@@ -865,6 +891,7 @@ def run_training(
         biosyst,
         x_train,
         loss_name=loss_name,
+        spec=spec,
         semantics=semantics,
         dgmsr_p=dgmsr_p,
         smooth_temperature=smooth_temperature,
@@ -897,6 +924,7 @@ def repeat_training(
     log_interval: int = 0,
     *,
     key,
+    spec: SpecType = "phi_xor_fast",
     semantics: str = "dgmsr",
     dgmsr_p: int = 3,
     smooth_temperature: float = 1.0,
@@ -922,6 +950,7 @@ def repeat_training(
             w=5.0,
             k1=0.8,
             k2=0.8,
+            spec=spec,
             semantics=semantics,
             dgmsr_p=dgmsr_p,
             smooth_temperature=smooth_temperature,
@@ -980,6 +1009,7 @@ def analyze_layer_sizes(
     log_interval: int = 0,
     *,
     key,
+    spec: SpecType = "phi_xor_fast",
     semantics: str = "dgmsr",
     dgmsr_p: int = 3,
     smooth_temperature: float = 1.0,
@@ -1008,6 +1038,7 @@ def analyze_layer_sizes(
             n_points=n_points,
             wandb_project=wandb_project,
             log_interval=log_interval,
+            spec=spec,
             semantics=semantics,
             dgmsr_p=dgmsr_p,
             smooth_temperature=smooth_temperature,
@@ -1045,6 +1076,7 @@ def main(cfg: TrainConfig):
         log_interval=cfg.log_interval,
         n=cfg.n_seeds,
         key=key,
+        spec=cfg.spec,
         semantics=cfg.semantics,
         dgmsr_p=cfg.dgmsr_p,
         smooth_temperature=cfg.smooth_temperature,
