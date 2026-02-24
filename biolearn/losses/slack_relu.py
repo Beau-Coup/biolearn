@@ -33,11 +33,15 @@ class SlackModel(eqx.Module):
     """
 
     model: BioSyst
-    slack: jax.Array
+    slack_raw: jax.Array
 
     def __init__(self, model: BioSyst):
         self.model = model
-        self.slack = jnp.asarray(0.1)
+        self.slack_raw = jnp.asarray(0.1)
+
+    @property
+    def slack(self) -> jax.Array:
+        return jax.nn.relu(self.slack_raw)
 
     def simulate(self, *args, **kwargs):
         return self.model.simulate(*args, **kwargs)
