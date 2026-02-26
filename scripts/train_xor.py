@@ -737,7 +737,7 @@ def train_model(
 
     learning_rate_schedule = optax.exponential_decay(
         init_value=lr,  # Starting learning rate
-        transition_steps=1000,  # Number of steps before each decay
+        transition_steps=600,  # Number of steps before each decay
         decay_rate=0.5,  # Multiplicative factor of decay
         staircase=True,  # If True, learning rate decays in discrete steps
     )
@@ -873,6 +873,7 @@ def run_training(
     run_name = f"{loss_name}_{integral_tag}_arch{arch_str}_seed{seed_idx}"
 
     wandb.init(
+        entity="biolearn",
         project=wandb_project,
         name=run_name,
         config={
@@ -977,6 +978,8 @@ def repeat_training(
             eqx.filter(trained_sim, eqx.is_inexact_array)
         )
         flat_params = jnp.concatenate([l.flatten() for l in leaves])
+        print(flat_params)
+        breakpoint()
         all_params.append(flat_params)
 
     # Log 3D point cloud of learned parameters to wandb
@@ -1001,7 +1004,7 @@ def repeat_training(
         integral_tag = "integral" if integral else "nointegral"
         arch_str = str(list(layer_sizes))
         run_name = f"{loss_name}_{integral_tag}_arch{arch_str}_params3d"
-        wandb.init(project=wandb_project, name=run_name)
+        wandb.init(entity="biolearn", project=wandb_project, name=run_name)
         wandb.log({"params_3d": wandb.Object3D.from_numpy(np.array(point_cloud))})
         wandb.finish()
 
