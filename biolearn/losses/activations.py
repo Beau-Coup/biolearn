@@ -4,7 +4,8 @@ from .base import make_loss
 
 
 def _activation_loss_factory(group_loss):
-    def ic_loss(specification, ts, *, domain=None, n_points=128, key=None, **kwargs):
+    def ic_loss(specification, ts, *, domain=None, n_points=128, key=None,
+                n_boundary_points: int = 0, **kwargs):
         return make_loss(
             group_loss=group_loss,
             specification=specification,
@@ -12,6 +13,7 @@ def _activation_loss_factory(group_loss):
             domain=domain,
             n_points=n_points,
             key=key,
+            n_boundary_points=n_boundary_points,
             **kwargs,
         )
 

@@ -109,6 +109,10 @@ class TrainConfig:
     """Weights & Biases project name."""
     log_interval: int = 100
     """Log contour plots to wandb every N epochs."""
+    n_holdout: int = 0
+    """Number of holdout initial conditions to track per epoch (0 = disabled)."""
+    boundary_frac: float = 0.0
+    """Fraction of samples drawn from domain boundary edges (0 = disabled)."""
 
 
 def _clip_pytree(
@@ -320,6 +324,7 @@ def _log_contour_plots(
     specification_kwargs,
     epoch,
     loss_name,
+    boundary_xs=None,
 ):
     """Compute robustness over the grid and log contour plots to wandb."""
     ros = _robustnesses(model, plot_xs, ts, specification, **specification_kwargs)
@@ -369,6 +374,12 @@ def _log_contour_plots(
     axes[1].set_xlabel("x1")
     axes[1].set_ylabel("x2")
 
+    if boundary_xs is not None:
+        b = np.array(boundary_xs)
+        for ax in axes:
+            ax.scatter(b[:, 0], b[:, 1], c="black", s=6, alpha=0.6,
+                       linewidths=0, zorder=7, label="boundary")
+
     fig.tight_layout()
     if wandb.run is not None:
         wandb.log({"contour_plots": wandb.Image(fig)}, commit=False)
@@ -392,6 +403,8 @@ def train(
     specification_kwargs: Optional[dict[str, Any]] = None,
     loss_name: str = "",
     early_stop: Optional[float] = None,
+    x_holdout: Optional[jt.Array] = None,
+    boundary_xs: Optional[jt.Array] = None,
     *,
     key: jt.PRNGKeyArray,
 ) -> Tuple[jt.PyTree, List[float]]:
@@ -480,6 +493,16 @@ def train(
 
         loss_val = float(loss)
         loss_traj.append(loss_val)
+        if x_holdout is not None and specification is not None and ts is not None:
+            holdout_ros = _robustnesses(model, x_holdout, ts, specification, **specification_kwargs)
+            if wandb.run is not None:
+                wandb.log(
+                    {
+                        "holdout_mean_robustness": float(jnp.mean(holdout_ros)),
+                        "holdout_frac_satisfied": float(jnp.mean(holdout_ros >= 0.0)),
+                    },
+                    commit=False,
+                )
         if wandb.run is not None:
             wandb.log(
                 {
@@ -506,6 +529,7 @@ def train(
                 specification_kwargs,
                 epoch_idx + 1,
                 loss_name,
+                boundary_xs=boundary_xs,
             )
         pbar.set_description(
             f"Loss: {loss:.4f}, Delta Mag: {delta_mag:.4f}, Grad Mag: {grad_mag:.4f}"
@@ -575,13 +599,15 @@ class ClassModel(BioSyst):
         return ys, sol
 
 
-def create_dataset(n_samples: int, max_val=1.0):
+def create_dataset(n_samples: int, max_val=1.0, boundary_frac: float = 0.0, key=None):
     """
     Create a 2D grid dataset for training.
     The dataset is created by generating a grid of points in the range [0, max_val]
     Args:
         n_samples: number of samples to generate (should be a perfect square)
         max_val: maximum value for the grid points
+        boundary_frac: fraction of samples to draw from boundary edges (0 = disabled)
+        key: PRNG key required when boundary_frac > 0
     Returns:
         a tuple containing: the generated dataset (x_train)
             and the grid (grid_x, grid_y)
@@ -591,6 +617,26 @@ def create_dataset(n_samples: int, max_val=1.0):
     x2 = jnp.linspace(0, max_val, n_per_axis)
     grid_x, grid_y = jnp.meshgrid(x1, x2)
     x_train = jnp.column_stack((grid_x.ravel(), grid_y.ravel()))
+
+    if boundary_frac > 0:
+        assert key is not None, "key is required when boundary_frac > 0"
+        n_per_edge = round(n_samples * boundary_frac) // 4
+        k1, k2, k3, k4 = jax.random.split(key, 4)
+        t1 = jax.random.uniform(k1, (n_per_edge,), maxval=max_val)
+        t2 = jax.random.uniform(k2, (n_per_edge,), maxval=max_val)
+        t3 = jax.random.uniform(k3, (n_per_edge,), maxval=max_val)
+        t4 = jax.random.uniform(k4, (n_per_edge,), maxval=max_val)
+        zeros = jnp.zeros(n_per_edge)
+        ones = jnp.full(n_per_edge, max_val)
+        boundary_pts = jnp.concatenate([
+            jnp.stack([t1, zeros], axis=1),   # bottom edge (y=0)
+            jnp.stack([t2, ones], axis=1),    # top edge (y=max_val)
+            jnp.stack([zeros, t3], axis=1),   # left edge (x=0)
+            jnp.stack([ones, t4], axis=1),    # right edge (x=max_val)
+        ], axis=0)
+        n_replace = boundary_pts.shape[0]
+        x_train = jnp.concatenate([x_train[:-n_replace], boundary_pts], axis=0)
+
     return x_train, (grid_x, grid_y)
 
 
@@ -605,16 +651,19 @@ def _make_loss_fn(
     semantics: str = "dgmsr",
     dgmsr_p: int = 3,
     smooth_temperature: float = 1.0,
+    boundary_frac: float = 0.0,
 ):
     """Create the loss function and optional model wrapper for the given loss type."""
     # Build integral kwargs when MC sampling is requested.
     integral_kwargs = {}
     if integral:
         assert key is not None, "key is required when integral=True"
+        n_boundary_points = round(n_points * boundary_frac)
         integral_kwargs = dict(
             domain=BoxDomain(jnp.array([0.0, 0.0]), jnp.array([1.0, 1.0])),
             n_points=n_points,
             key=key,
+            n_boundary_points=n_boundary_points,
         )
 
     spec_kwargs = dict(
@@ -695,6 +744,8 @@ def train_model(
     integral: bool = False,
     n_points: int = 128,
     log_interval: int = 0,
+    n_holdout: int = 0,
+    boundary_frac: float = 0.0,
     key: jax.Array,
 ) -> Tuple[NFC, List[float]]:
     """
@@ -720,7 +771,54 @@ def train_model(
     x_plot = jnp.stack([xs.flatten(), ys.flatten()], axis=-1)
     grid = (xs, ys)
 
-    loss_key, key = jax.random.split(key)
+    bvis_key, holdout_key, loss_key, key = jax.random.split(key, 4)
+
+    x_boundary_plot = None
+    if boundary_frac > 0:
+        n_bvis_per_edge = 10
+        bk1, bk2, bk3, bk4 = jax.random.split(bvis_key, 4)
+        t1 = jax.random.uniform(bk1, (n_bvis_per_edge,))
+        t2 = jax.random.uniform(bk2, (n_bvis_per_edge,))
+        t3 = jax.random.uniform(bk3, (n_bvis_per_edge,))
+        t4 = jax.random.uniform(bk4, (n_bvis_per_edge,))
+        z = jnp.zeros(n_bvis_per_edge)
+        o = jnp.ones(n_bvis_per_edge)
+        x_boundary_plot = jnp.concatenate([
+            jnp.stack([t1, z], axis=1),
+            jnp.stack([t2, o], axis=1),
+            jnp.stack([z, t3], axis=1),
+            jnp.stack([o, t4], axis=1),
+        ], axis=0)
+
+    if n_holdout > 0:
+        if boundary_frac > 0:
+            n_holdout_boundary = round(n_holdout * boundary_frac)
+            n_holdout_interior = n_holdout - n_holdout_boundary
+            int_key, bnd_key = jax.random.split(holdout_key)
+            x_holdout_int = jax.random.uniform(int_key, (n_holdout_interior, 2))
+            if n_holdout_boundary > 0:
+                n_hb_per_edge = n_holdout_boundary // 4
+                hbk1, hbk2, hbk3, hbk4 = jax.random.split(bnd_key, 4)
+                th1 = jax.random.uniform(hbk1, (n_hb_per_edge,))
+                th2 = jax.random.uniform(hbk2, (n_hb_per_edge,))
+                th3 = jax.random.uniform(hbk3, (n_hb_per_edge,))
+                th4 = jax.random.uniform(hbk4, (n_hb_per_edge,))
+                zh = jnp.zeros(n_hb_per_edge)
+                oh = jnp.ones(n_hb_per_edge)
+                x_holdout_bnd = jnp.concatenate([
+                    jnp.stack([th1, zh], axis=1),
+                    jnp.stack([th2, oh], axis=1),
+                    jnp.stack([zh, th3], axis=1),
+                    jnp.stack([oh, th4], axis=1),
+                ], axis=0)
+                x_holdout = jnp.concatenate([x_holdout_int, x_holdout_bnd], axis=0)
+            else:
+                x_holdout = x_holdout_int
+        else:
+            x_holdout = jax.random.uniform(holdout_key, (n_holdout, 2))
+    else:
+        x_holdout = None
+
     loss_fn, wrap_model, specification, spec_kwargs = _make_loss_fn(
         loss_name,
         ts,
@@ -731,6 +829,7 @@ def train_model(
         semantics=semantics,
         dgmsr_p=dgmsr_p,
         smooth_temperature=smooth_temperature,
+        boundary_frac=boundary_frac,
     )
 
     trainable = wrap_model(biosyst) if wrap_model is not None else biosyst
@@ -760,6 +859,8 @@ def train_model(
             specification_kwargs=spec_kwargs,
             loss_name=loss_name,
             early_stop=early_stop,
+            x_holdout=x_holdout,
+            boundary_xs=x_boundary_plot,
             key=key,
         )
         if loss_name == "slack_relu":
@@ -860,6 +961,8 @@ def run_training(
     wandb_project: Optional[str] = None,
     seed_idx: int = 0,
     log_interval: int = 0,
+    n_holdout: int = 0,
+    boundary_frac: float = 0.0,
     *,
     key,
     spec: SpecType = "phi_xor_fast",
@@ -914,6 +1017,8 @@ def run_training(
         integral=integral,
         n_points=n_points,
         log_interval=log_interval,
+        n_holdout=n_holdout,
+        boundary_frac=boundary_frac,
         key=sk2,
     )
 
@@ -935,6 +1040,8 @@ def repeat_training(
     n_points=128,
     wandb_project: Optional[str] = None,
     log_interval: int = 0,
+    n_holdout: int = 0,
+    boundary_frac: float = 0.0,
     *,
     key,
     spec: SpecType = "phi_xor_fast",
@@ -961,6 +1068,8 @@ def repeat_training(
             wandb_project=wandb_project,
             seed_idx=i,
             log_interval=log_interval,
+            n_holdout=n_holdout,
+            boundary_frac=boundary_frac,
             w=5.0,
             k1=0.8,
             k2=0.8,
@@ -1023,6 +1132,8 @@ def analyze_layer_sizes(
     n_points=128,
     wandb_project: Optional[str] = None,
     log_interval: int = 0,
+    n_holdout: int = 0,
+    boundary_frac: float = 0.0,
     *,
     key,
     spec: SpecType = "phi_xor_fast",
@@ -1055,6 +1166,8 @@ def analyze_layer_sizes(
             n_points=n_points,
             wandb_project=wandb_project,
             log_interval=log_interval,
+            n_holdout=n_holdout,
+            boundary_frac=boundary_frac,
             spec=spec,
             early_stop=early_stop,
             semantics=semantics,
@@ -1078,7 +1191,9 @@ def main(cfg: TrainConfig):
 
     archs = [(2, 1), (2, 1, 1)]
 
-    x_train, _ = create_dataset(n_samples=cfg.n_samples, max_val=1.0)
+    dataset_key, key = jax.random.split(key)
+    x_train, _ = create_dataset(n_samples=cfg.n_samples, max_val=1.0,
+                                 boundary_frac=cfg.boundary_frac, key=dataset_key)
 
     info = analyze_layer_sizes(
         archs,
@@ -1092,7 +1207,9 @@ def main(cfg: TrainConfig):
         n_points=cfg.n_points,
         wandb_project=cfg.wandb_project,
         log_interval=cfg.log_interval,
+        n_holdout=cfg.n_holdout,
         n=cfg.n_seeds,
+        boundary_frac=cfg.boundary_frac,
         key=key,
         spec=cfg.spec,
         early_stop=cfg.early_stop,

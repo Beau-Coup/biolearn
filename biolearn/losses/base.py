@@ -47,6 +47,7 @@ def make_loss(
     domain: "BoxDomain | None" = None,
     n_points: int = 128,
     key: "jax.Array | None" = None,
+    n_boundary_points: int = 0,
     **kwargs,
 ):
     """Create a compiled loss function.
@@ -74,7 +75,7 @@ def make_loss(
                 jax.lax.bitcast_convert_type(xs.flatten(), jnp.int32)
             )
             step_key = jax.random.fold_in(key, hash_val.sum())
-            return _integral_fn(step_key, system, n_points)
+            return _integral_fn(step_key, system, n_points, n_boundary_points)
 
         return _loss_integral
 
@@ -134,7 +135,17 @@ def make_integral_loss(
     """
 
     @eqx.filter_jit
-    def _estimate_integral(key: jax.Array, system: BioSyst, n_points: int):
+    def _estimate_integral(
+        key: jax.Array, system: BioSyst, n_points: int, n_boundary_points: int
+    ):
+        key, sub1, sub2, sub3 = jr.split(key, 4)
+        d = domain.low.shape[0]
+        fixed_dim = jr.randint(sub1, (n_boundary_points,), 0, d)
+        side = jr.randint(sub2, (n_boundary_points,), 0, 2)
+        boundary_points = jr.uniform(sub3, (n_boundary_points, d),
+                                     minval=domain.low, maxval=domain.high)
+        fixed_val = jnp.where(side == 0, domain.low[fixed_dim], domain.high[fixed_dim])
+        boundary_points = boundary_points.at[jnp.arange(n_boundary_points), fixed_dim].set(fixed_val)
         points = jr.uniform(
             key,
             (
@@ -144,7 +155,9 @@ def make_integral_loss(
             minval=domain.low,
             maxval=domain.high,
         )
-        ros = _robustnesses(system, points, ts, specification, **kwargs)
+
+        all_points = jnp.concatenate([points, boundary_points], axis=0)
+        ros = _robustnesses(system, all_points, ts, specification, **kwargs)
         return weighting_fn(ros)
 
     return _estimate_integral
