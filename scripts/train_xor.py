@@ -979,7 +979,6 @@ def repeat_training(
         )
         flat_params = jnp.concatenate([l.flatten() for l in leaves])
         print(flat_params)
-        breakpoint()
         all_params.append(flat_params)
 
     # Log 3D point cloud of learned parameters to wandb
