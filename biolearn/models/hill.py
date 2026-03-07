@@ -45,7 +45,6 @@ class Activation(Edge):
 
     def __init__(self, start, end, hill_coefficient):
         super().__init__(start, end)
-        self.k = jnp.array(1.0)
         self.hill_coefficient = hill_coefficient
 
 
@@ -54,7 +53,6 @@ class Inhibition(Edge):
 
     def __init__(self, start, end, hill_coefficient):
         super().__init__(start, end)
-        self.k = jnp.array(1.0)
         self.hill_coefficient = hill_coefficient
 
 
@@ -63,8 +61,8 @@ class InhibitActivateAggregator(eqx.Module):
     Each node has one of these classes.
     """
 
-    hill_inhibit: jax.Array = eqx.field(static=True)
-    hill_activate: jax.Array = eqx.field(static=True)
+    hill_inhibit: List[float]
+    hill_activate: List[float]
     inhibit_indices: List[int]
     activate_indices: List[int]
 
@@ -75,14 +73,18 @@ class InhibitActivateAggregator(eqx.Module):
         self.k_inhibit = jnp.ones(len(inhibitions))
         self.k_activate = jnp.ones(len(activations))
 
-        self.hill_inhibit = jnp.array([edge.hill_coefficient for edge in inhibitions])
-        self.hill_activate = jnp.array([edge.hill_coefficient for edge in activations])
+        self.hill_inhibit = [edge.hill_coefficient for edge in inhibitions]
+        self.hill_activate = [edge.hill_coefficient for edge in activations]
         self.inhibit_indices = [edge.start for edge in inhibitions]
         self.activate_indices = [edge.start for edge in activations]
 
     def _denominator_fun(self, x: jax.Array) -> jax.Array:
         return 1.0 + jnp.sum(
-            self.k_inhibit * (x[jnp.array(self.inhibit_indices)] ** self.hill_inhibit)
+            self.k_inhibit
+            * (
+                x[jnp.array(self.inhibit_indices, dtype=jnp.int32)]
+                ** jnp.array(self.hill_inhibit)
+            )
         )
 
     def _numerator_fun(self, x: jax.Array) -> jax.Array:
@@ -91,7 +93,10 @@ class InhibitActivateAggregator(eqx.Module):
 
         return jnp.sum(
             self.k_activate
-            * (x[jnp.array(self.activate_indices)] ** self.hill_activate)
+            * (
+                x[jnp.array(self.activate_indices, dtype=jnp.int32)]
+                ** jnp.array(self.hill_activate)
+            )
         )
 
     def __call__(self, x: jax.Array) -> jax.Array:
@@ -101,9 +106,10 @@ class InhibitActivateAggregator(eqx.Module):
 class BioGNN(eqx.Module):
     """Implementation of the bio-inspired graph neural network."""
 
-    aggregators: List[eqx.Module]
     agg_indices: List[int]
     n_nodes: int
+
+    aggregators: List[eqx.Module]
     decay: jax.Array
     growth: jax.Array
     nu: jax.Array
@@ -133,16 +139,18 @@ class BioGNN(eqx.Module):
                     )
 
         # For each node that has either ingoing inhibition or activation edges, make an aggregator
-        self.aggregators = []
-        self.agg_indices = []
+        aggregators = []
+        agg_indices = []
         for node in range(n_nodes):
             if recipient_activations[node] or recipient_inhibitions[node]:
-                self.agg_indices.append(node)
-                self.aggregators.append(
+                agg_indices.append(node)
+                aggregators.append(
                     InhibitActivateAggregator(
                         recipient_activations[node], recipient_inhibitions[node]
                     )
                 )
+        self.aggregators = aggregators
+        self.agg_indices = agg_indices
 
         self.decay = jnp.ones(n_nodes)
         self.growth = jnp.ones_like(self.decay)
@@ -162,3 +170,16 @@ class BioGNN(eqx.Module):
         dx = dx + dx_agg
 
         return self.nu * dx - self.decay * x + self.growth
+
+
+if __name__ == "__main__":
+    graph = [
+        (0, 1, EdgeType.Activation),
+        (1, 0, EdgeType.Inhibition),
+        (2, 1, EdgeType.Inhibition),
+    ]
+
+    net = BioGNN(graph, 2.0)
+
+    jitted = eqx.filter_jit(net)
+    print(jitted(jnp.zeros(3)))
