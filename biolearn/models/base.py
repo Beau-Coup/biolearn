@@ -1,11 +1,14 @@
+from abc import abstractmethod
+
 import equinox as eqx
 
 
-class Model(eqx.Module):
+class BioModel(eqx.Module):
     """A base model class to abstract simulation behavior."""
 
-    def __init__(self):
-        pass
+    @abstractmethod
+    def __call__(self, x):
+        raise NotImplementedError
 
     def _step(self):
         raise NotImplementedError

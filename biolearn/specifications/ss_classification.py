@@ -4,22 +4,7 @@ import jax
 import jax.numpy as jnp
 import pystl
 
-
-def _get_semantics(semantics: str, dgmsr_p: int, smooth_temperature: float):
-    semantics_kwargs: dict[str, object] = {}
-    if semantics == "dgmsr":
-        semantics_kwargs["p"] = int(dgmsr_p)
-    elif semantics == "smooth":
-        semantics_kwargs["temperature"] = float(smooth_temperature)
-    elif semantics in {"classical", "agm"}:
-        pass
-    else:
-        raise ValueError(
-            f"Unsupported semantics {semantics!r}. "
-            "Expected one of: 'dgmsr', 'smooth', 'classical', 'agm'."
-        )
-    semantics_impl = pystl.create_semantics(semantics, backend="jax", **semantics_kwargs)
-    return semantics_impl
+from .common import get_semantics
 
 
 def phi_xor_fast(
@@ -36,7 +21,7 @@ def phi_xor_fast(
     STL specification implementing an XOR classification
     at steady state.
 
-    Error should be less than ep1 at t1, 
+    Error should be less than ep1 at t1,
     and eventually less than eps2.
 
     Expects traj shape (T, 3) with columns [x1, x2, y].
@@ -55,10 +40,9 @@ def phi_xor_fast(
     phi2 = pystl.Eventually(pystl.Always(err_lowest))
     phi = phi1 & phi2
 
-    semantics_impl = _get_semantics(semantics, dgmsr_p, smooth_temperature)
+    semantics_impl = get_semantics(semantics, dgmsr_p, smooth_temperature)
     ro = phi.evaluate(err, semantics_impl, t=0)
     return jnp.asarray(ro).squeeze()
-
 
 
 def phi_xor_ss(
@@ -86,6 +70,6 @@ def phi_xor_ss(
 
     phi = pystl.Eventually(pystl.Always(err_low))
 
-    semantics_impl = _get_semantics(semantics, dgmsr_p, smooth_temperature)
+    semantics_impl = get_semantics(semantics, dgmsr_p, smooth_temperature)
     ro = phi.evaluate(err, semantics_impl, t=0)
     return jnp.asarray(ro).squeeze()
