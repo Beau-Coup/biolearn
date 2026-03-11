@@ -20,33 +20,36 @@ def fast_produce(
 ) -> jax.Array:
     """
     Encodes producing some species within short time intervals given that other species are present.
-    See the paper fr more information.
+    See the paper for more information.
 
     Parameters:
     ----------
-        traj: (n, 6) trajectory of states
+        traj: (n, 6) trajectory of states, columns are [x1, x2, x3, x4, x5, x6]
+              x1/x2 are inputs, x3/x4 are outputs, x5/x6 are additional species.
     """
-
+    # Predicates index specific columns of the trajectory (traj[t] is a 6D row).
+    # Each lambda extracts the relevant species value.
     must_produce_condition = Predicate(
-        "x1>0.2", fn=lambda sig, t: sig[t] - 0.2
-    ) and Predicate("x2>0.3", fn=lambda sig, t: sig[t] - 0.3)
-    produce_result = Predicate("x3>0.5", fn=lambda sig, t: sig[t] - 0.2).eventually(
+        "x1>0.2", fn=lambda sig, t: sig[t, 0] - 0.2
+    ) and Predicate("x2>0.3", fn=lambda sig, t: sig[t, 1] - 0.3)
+
+    produce_result = Predicate("x3>0.5", fn=lambda sig, t: sig[t, 2] - 0.2).eventually(
         Interval(0, 10)
-    ) and Predicate("x4>0.9", fn=lambda sig, t: sig[t] - 0.9).always().eventually(
+    ) and Predicate("x4>0.9", fn=lambda sig, t: sig[t, 3] - 0.9).always().eventually(
         Interval(0, 10)
     )
     must_produce = Not(must_produce_condition) or produce_result
 
-    inhibit3 = Not(Predicate("x4>0.6", fn=lambda sig, t: sig[t] - 0.6)) or (
-        Predicate("x3<0.3", fn=lambda sig, t: 0.3 - sig[t])
+    inhibit3 = Not(Predicate("x4>0.6", fn=lambda sig, t: sig[t, 3] - 0.6)) or (
+        Predicate("x3<0.3", fn=lambda sig, t: 0.3 - sig[t, 2])
         .always()
         .eventually(Interval(0, 20))
     )
 
-    max1 = Predicate("x1<1.5", fn=lambda sig, t: 1.5 - sig[t]).always()
-    max2 = Predicate("x2<1.5", fn=lambda sig, t: 1.5 - sig[t]).always()
-    max3 = Predicate("x3<1.5", fn=lambda sig, t: 1.5 - sig[t]).always()
-    max4 = Predicate("x4<1.5", fn=lambda sig, t: 1.5 - sig[t]).always()
+    max1 = Predicate("x1<1.5", fn=lambda sig, t: 1.5 - sig[t, 0]).always()
+    max2 = Predicate("x2<1.5", fn=lambda sig, t: 1.5 - sig[t, 1]).always()
+    max3 = Predicate("x3<1.5", fn=lambda sig, t: 1.5 - sig[t, 2]).always()
+    max4 = Predicate("x4<1.5", fn=lambda sig, t: 1.5 - sig[t, 3]).always()
 
     full = must_produce and inhibit3 and max1 and max2 and max3 and max4
 

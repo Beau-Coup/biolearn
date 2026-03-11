@@ -3,6 +3,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import pystl
+from pystl.api import Signal
 
 from .common import get_semantics
 
@@ -41,7 +42,7 @@ def phi_xor_fast(
     phi = phi1 & phi2
 
     semantics_impl = get_semantics(semantics, dgmsr_p, smooth_temperature)
-    ro = phi.evaluate(err, semantics_impl, t=0)
+    ro = phi.evaluate(Signal(err), semantics_impl, t=0)
     return jnp.asarray(ro).squeeze()
 
 
@@ -71,5 +72,5 @@ def phi_xor_ss(
     phi = pystl.Eventually(pystl.Always(err_low))
 
     semantics_impl = get_semantics(semantics, dgmsr_p, smooth_temperature)
-    ro = phi.evaluate(err, semantics_impl, t=0)
+    ro = phi.evaluate(Signal(err), semantics_impl, t=0)
     return jnp.asarray(ro).squeeze()

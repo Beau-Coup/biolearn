@@ -12,11 +12,19 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from ..models import BioSyst
+from ..models import BioModel
 
 
-def _robustnesses(system, xs, ts, specification, **kwargs):
+def _default_traj_fn(x0, y_trace):
+    """XOR-style: repeat 2D input + last species output."""
+    x_traj = jnp.repeat(jnp.array([[x0[0], x0[1]]]), y_trace.shape[0], axis=0)
+    y_out = y_trace[:, -1][:, None]
+    return jnp.concatenate([x_traj, y_out], axis=1)
+
+
+def _robustnesses(system, xs, ts, specification, traj_fn=None, **kwargs):
     """Simulate each initial condition and return per-sample robustnesses."""
+    _make_traj = traj_fn if traj_fn is not None else _default_traj_fn
 
     def _run_single(x0):
         y_trace, _ = system.simulate(
@@ -29,12 +37,7 @@ def _robustnesses(system, xs, ts, specification, **kwargs):
             atol=1e-6,
             progress_bar=False,
         )
-        x_traj = jnp.array([[x0[0], x0[1]]])
-        x_traj = jnp.repeat(x_traj, repeats=y_trace.shape[0], axis=0)
-
-        y_out = y_trace[:, -1][:, None]
-        traj = jnp.concatenate([x_traj, y_out], axis=1)
-
+        traj = _make_traj(x0, y_trace)
         return specification(traj, **kwargs)
 
     return jax.vmap(_run_single)(xs)
@@ -48,6 +51,7 @@ def make_loss(
     n_points: int = 128,
     key: "jax.Array | None" = None,
     n_boundary_points: int = 0,
+    traj_fn=None,
     **kwargs,
 ):
     """Create a compiled loss function.
@@ -66,11 +70,12 @@ def make_loss(
             domain=domain,
             specification=specification,
             ts=ts,
+            traj_fn=traj_fn,
             **kwargs,
         )
 
         @eqx.filter_jit
-        def _loss_integral(system: BioSyst, xs, _ys):
+        def _loss_integral(system: BioModel, xs, _ys):
             hash_val = jnp.bitwise_xor.reduce(
                 jax.lax.bitcast_convert_type(xs.flatten(), jnp.int32)
             )
@@ -80,8 +85,8 @@ def make_loss(
         return _loss_integral
 
     @eqx.filter_jit
-    def _loss(system: BioSyst, xs, _ys):
-        ros = _robustnesses(system, xs, ts, specification, **kwargs)
+    def _loss(system: BioModel, xs, _ys):
+        ros = _robustnesses(system, xs, ts, specification, traj_fn=traj_fn, **kwargs)
         return group_loss(ros)
 
     return _loss
@@ -91,6 +96,7 @@ def make_slack_loss(
     slack_group_loss: Callable[[jax.Array, jax.Array], jax.Array],
     specification: Callable[[jax.Array], jax.Array],
     ts: jax.Array,
+    traj_fn=None,
     **kwargs,
 ):
     """Like ``make_loss`` but for losses that use a learnable slack variable.
@@ -101,7 +107,7 @@ def make_slack_loss(
 
     @eqx.filter_jit
     def _loss(system, xs, _ys):
-        ros = _robustnesses(system, xs, ts, specification, **kwargs)
+        ros = _robustnesses(system, xs, ts, specification, traj_fn=traj_fn, **kwargs)
         return slack_group_loss(ros, system.slack)
 
     return _loss
@@ -123,6 +129,7 @@ def make_integral_loss(
     domain: BoxDomain,
     specification: Callable[[jax.Array], jax.Array],
     ts: jax.Array,
+    traj_fn=None,
     **kwargs,
 ):
     """Monte-Carlo integration loss.
@@ -136,16 +143,19 @@ def make_integral_loss(
 
     @eqx.filter_jit
     def _estimate_integral(
-        key: jax.Array, system: BioSyst, n_points: int, n_boundary_points: int
+        key: jax.Array, system: BioModel, n_points: int, n_boundary_points: int
     ):
         key, sub1, sub2, sub3 = jr.split(key, 4)
         d = domain.low.shape[0]
         fixed_dim = jr.randint(sub1, (n_boundary_points,), 0, d)
         side = jr.randint(sub2, (n_boundary_points,), 0, 2)
-        boundary_points = jr.uniform(sub3, (n_boundary_points, d),
-                                     minval=domain.low, maxval=domain.high)
+        boundary_points = jr.uniform(
+            sub3, (n_boundary_points, d), minval=domain.low, maxval=domain.high
+        )
         fixed_val = jnp.where(side == 0, domain.low[fixed_dim], domain.high[fixed_dim])
-        boundary_points = boundary_points.at[jnp.arange(n_boundary_points), fixed_dim].set(fixed_val)
+        boundary_points = boundary_points.at[
+            jnp.arange(n_boundary_points), fixed_dim
+        ].set(fixed_val)
         points = jr.uniform(
             key,
             (
@@ -157,7 +167,9 @@ def make_integral_loss(
         )
 
         all_points = jnp.concatenate([points, boundary_points], axis=0)
-        ros = _robustnesses(system, all_points, ts, specification, **kwargs)
+        ros = _robustnesses(
+            system, all_points, ts, specification, traj_fn=traj_fn, **kwargs
+        )
         return weighting_fn(ros)
 
     return _estimate_integral

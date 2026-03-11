@@ -1,1 +1,3 @@
-from .nfc import NFC, BioSyst, MoormanNFC
+from .base import BioModel
+from .hill import BioGnnModel
+from .nfc import NFC, MoormanNFC

@@ -1,30 +1,30 @@
 import dataclasses
 import os
-import traceback
-from typing import Any, Callable, Iterator, List, Literal, Optional, Sequence, Tuple
+from typing import Callable, List, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jaxtyping as jt
 import matplotlib.colors
 import matplotlib.pyplot as plt
 import numpy as np
 import optax
 import pandas as pd
 import tyro
-from tqdm import tqdm
 
 import wandb
 from biolearn import (
     NFC,
-    BioSyst,
+    BioModel,
     MoormanNFC,
 )
 from biolearn.losses import *
-from biolearn.losses.base import _robustnesses
 from biolearn.losses.slack_relu import SlackModel
 from biolearn.specifications.ss_classification import phi_xor_fast, phi_xor_ss
+from scripts.training_suite import (
+    run_suite,
+    train,
+)
 
 SS_CLASS_EXP_RESULTS_PATH = "data/results"
 
@@ -115,432 +115,7 @@ class TrainConfig:
     """Fraction of samples drawn from domain boundary edges (0 = disabled)."""
 
 
-def _clip_pytree(
-    pytree: jt.PyTree,
-    clip_filter_fn: Optional[Callable[[jt.PyTree], jt.Union[Any, Sequence[Any]]]],
-    min_val: jt.ScalarLike,
-    max_val: jt.ScalarLike,
-):
-    """
-    Clipping function for PyTrees.
-    Args:
-        pytree: pytree to clip.
-        min_val: minimum value to clip to.
-        max_val: maximum value to clip to.
-
-    Returns:
-        pytree: clipped pytree.
-    """
-    if clip_filter_fn is None:
-        new_nfc = jax.tree_util.tree_map(
-            lambda x: jnp.clip(x, min_val, max_val),
-            pytree,
-            is_leaf=eqx.is_inexact_array,
-        )
-    else:
-        new_nfc = eqx.tree_at(
-            clip_filter_fn,
-            pytree,
-            replace_fn=lambda _x: jnp.clip(_x, min_val, max_val),
-            is_leaf=eqx.is_inexact_array,
-        )
-
-    return new_nfc
-
-
-def adam(
-    lr: jt.ScalarLike,
-    transition_steps: jt.ScalarLike = 10,
-    decay_rate: jt.ScalarLike = 0.9,
-    transition_begin: jt.ScalarLike = 50,
-    clip_margin: Tuple[jt.ScalarLike, jt.ScalarLike] = (1e-3, jnp.inf),
-    clip_filter: Optional[Callable[[jt.PyTree], jt.Union[Any, Sequence[Any]]]] = None,
-):
-    """
-    Adam optimizer customized to NFCs. It incorporates:
-        * non-negative parameters
-        * clipping of parameters with custom filter and margins
-        * learning rate scheduler.
-
-    Args:
-        lr: initial learning rate
-        transition_steps: transition steps before the decay rate is applied
-        decay_rate: decay rate of the learning rate
-        transition_begin: number of steps before the initial decay is applied
-        clip_margin: margins to clip the parameters
-        clip_filter: function to select a subset of parameters
-            on which to apply clipping
-    Returns:
-        optax.GradientTransformation: Adam optimizer
-            with custom learning rate scheduler
-    """
-
-    def non_negative():
-        def init_fn(params):  # pylint: disable=unused-argument
-            return ()
-
-        def update_fn(updates, state, params=None):
-            _new_params = eqx.apply_updates(params, updates)
-            _non_neg_params = jax.tree_util.tree_map(
-                jax.nn.relu, _new_params, is_leaf=eqx.is_inexact_array
-            )
-
-            clipped_updates = jax.tree_util.tree_map(
-                lambda clipped, old: clipped - old, _non_neg_params, params
-            )
-            return clipped_updates, state
-
-        return optax.GradientTransformation(init_fn, update_fn)
-
-    def clip_params():  # pylint: disable=unused-variable
-        def init_fn(params):  # pylint: disable=unused-argument
-            return ()
-
-        def update_fn(updates, state, params=None):
-            _new_params = eqx.apply_updates(params, updates)
-            _non_neg_params = jax.tree_util.tree_map(
-                jax.nn.relu, _new_params, is_leaf=eqx.is_inexact_array
-            )
-            _clipped_params = _clip_pytree(
-                _non_neg_params, clip_filter, clip_margin[0], clip_margin[1]
-            )
-
-            clipped_updates = jax.tree_util.tree_map(
-                lambda clipped, old: clipped - old, _clipped_params, params
-            )
-            return clipped_updates, state
-
-        return optax.GradientTransformation(init_fn, update_fn)
-
-    scheduler = optax.exponential_decay(
-        init_value=lr,
-        transition_steps=transition_steps,
-        decay_rate=decay_rate,
-        transition_begin=transition_begin,
-    )
-
-    optimizer = optax.chain(
-        optax.scale_by_adam(),
-        # optax.clip_by_global_norm(10.0),
-        optax.scale_by_schedule(scheduler),
-        optax.scale(-1.0),
-        non_negative(),
-        # clip_params(),
-    )
-
-    return optimizer
-
-
-def compute_grad_mag(grads):
-    """Compute the magnitude of gradients."""
-    squared_grads = jax.tree_util.tree_map(
-        lambda g: jnp.sum(g**2), grads, is_leaf=eqx.is_inexact_array
-    )
-    total_grad = sum(
-        jax.tree_util.tree_leaves(squared_grads, is_leaf=eqx.is_inexact_array)
-    )
-    grad_mag = jnp.sqrt(total_grad)
-    return grad_mag
-
-
-def compute_difference(pytree1: jt.PyTree, pytree2: jt.PyTree) -> jt.PyTree:
-    """Computes the difference (in abs) of two identically structured pytrees"""
-
-    pytree1_params, pytree2_params = (
-        eqx.filter(pytree1, eqx.is_array),
-        eqx.filter(pytree2, eqx.is_array),
-    )
-
-    pytree_sub = jax.tree_util.tree_map(
-        lambda x, y: jnp.abs(x - y).sum(),
-        pytree1_params,
-        pytree2_params,
-        is_leaf=eqx.is_inexact_array,
-    )
-    total_sub = sum(jax.tree_util.tree_leaves(pytree_sub, is_leaf=eqx.is_inexact_array))
-    return total_sub
-
-
-# Toy dataloader
-def dataloader(
-    arrays: jt.PyTree, batch_size: int, *, key: jt.PRNGKeyArray
-) -> Iterator[jt.PyTree]:
-    """
-    Loads data in batches. This is an infinite generator.
-    Args:
-        arrays: pytree containing the data.
-        batch_size: size of the batches.
-        key: random key generator for the data loader
-    Returns:
-
-    """
-    dataset_size = arrays[0].shape[0]
-    assert all(array.shape[0] == dataset_size for array in arrays)
-
-    indices = jnp.arange(dataset_size)
-    while True:
-        perm = jax.random.permutation(key, indices)
-        _, key = jax.random.split(key, 2)
-        start = 0
-        end = batch_size
-        while end <= dataset_size:
-            batch_perm = perm[start:end]
-            yield tuple(array[batch_perm] for array in arrays)
-            start = end
-            end = start + batch_size
-
-
-def freeze_parameter_mask(nfc: NFC, parameters: List[str]) -> NFC:
-    """
-    Creates an NFC-type pytree with a mask that is True only for inexact arrays
-    that are not on the parameters list.
-    Args:
-        nfc: nfc to be masked
-        parameters: list of parameters to freeze
-    Returns:
-        NFC-like pytree with the mask
-    """
-    mask = jax.tree_util.tree_map(eqx.is_inexact_array, nfc)
-
-    for param in parameters:
-        for i, layer in enumerate(mask.layers):
-            current_val = getattr(layer.nodes, param)
-            current_val_false = jax.tree_util.tree_map(lambda _: False, current_val)
-            mask = eqx.tree_at(
-                lambda _x, i=i, param=param: getattr(_x.layers[i].nodes, param),
-                mask,
-                replace=current_val_false,
-            )
-
-    return mask
-
-
-def _log_contour_plots(
-    model,
-    plot_xs,
-    plot_grid,
-    ts,
-    specification,
-    specification_kwargs,
-    epoch,
-    loss_name,
-    boundary_xs=None,
-):
-    """Compute robustness over the grid and log contour plots to wandb."""
-    ros = _robustnesses(model, plot_xs, ts, specification, **specification_kwargs)
-    grid_x, grid_y = plot_grid
-    ros_grid = jax.nn.hard_tanh(ros.reshape(grid_x.shape))
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    vmax = 0.1
-    n_levels = 30
-
-    # Robustness contour
-    cf0 = axes[0].contourf(
-        grid_x,
-        grid_y,
-        ros_grid,
-        levels=jnp.linspace(-vmax, vmax, n_levels),
-        cmap="RdBu_r",
-        extend="both",
-    )
-    axes[0].contour(
-        grid_x,
-        grid_y,
-        ros_grid,
-        levels=[0.0],
-        colors=["#c0392b"],
-        linewidths=2.5,
-        zorder=6,
-    )
-    fig.colorbar(cf0, ax=axes[0])
-    axes[0].set_title(f"Robustness (epoch {epoch})")
-    axes[0].set_xlabel("x1")
-    axes[0].set_ylabel("x2")
-
-    # Loss contour (per-sample loss using the chosen loss function)
-    elem_loss = _get_elementwise_loss(loss_name, model)
-    loss_grid = elem_loss(ros_grid)
-    cf1 = axes[1].contourf(
-        grid_x,
-        grid_y,
-        loss_grid,
-        levels=n_levels,
-        cmap="RdBu_r",
-        extend="both",
-    )
-    fig.colorbar(cf1, ax=axes[1])
-    axes[1].set_title(f"Loss (epoch {epoch})")
-    axes[1].set_xlabel("x1")
-    axes[1].set_ylabel("x2")
-
-    if boundary_xs is not None:
-        b = np.array(boundary_xs)
-        for ax in axes:
-            ax.scatter(b[:, 0], b[:, 1], c="black", s=6, alpha=0.6,
-                       linewidths=0, zorder=7, label="boundary")
-
-    fig.tight_layout()
-    if wandb.run is not None:
-        wandb.log({"contour_plots": wandb.Image(fig)}, commit=False)
-    plt.close(fig)
-
-
-def train(
-    model: jt.PyTree,
-    optimizer: optax.GradientTransformation,
-    epochs: int,
-    batch_size: int,
-    loss_fn: Callable[[jt.PyTree, jt.Array, jt.Array], jt.Scalar],
-    x_train: jt.Array,
-    freeze_mask: Optional[jt.PyTree] = None,
-    verbose: bool = True,
-    log_interval: int = 0,
-    plot_xs: Optional[jt.Array] = None,
-    plot_grid: Optional[Tuple[jt.Array, jt.Array]] = None,
-    ts: Optional[jt.Array] = None,
-    specification: Optional[Callable] = None,
-    specification_kwargs: Optional[dict[str, Any]] = None,
-    loss_name: str = "",
-    early_stop: Optional[float] = None,
-    x_holdout: Optional[jt.Array] = None,
-    boundary_xs: Optional[jt.Array] = None,
-    *,
-    key: jt.PRNGKeyArray,
-) -> Tuple[jt.PyTree, List[float]]:
-    """
-    Training loop for an NFC model.
-
-    Args:
-        model: model to train, normally an NFC, but could be any pytree.
-        optimizer: optimizer to use for training.
-        epochs: number of training epochs.
-        batch_size: batch size.
-        loss_fn: loss function to use.
-        x_train: training data.
-        y_train: target training data.
-        freeze_mask: function masking trainable parameters or the model.
-            All inexact arrays are trained by default
-        verbose: whether to print training info.
-        log_interval: log contour plots to wandb every N epochs (0 = disabled).
-        plot_xs: grid points for contour plotting.
-        plot_grid: (grid_x, grid_y) meshgrid for contour plotting.
-        ts: time array for simulation (needed for contour plots).
-        specification: STL specification function (needed for contour plots).
-        loss_name: name of the loss function (for element-wise contour plotting).
-        key: random key generator for the data loader
-
-    Returns:
-        Tuple of (trained model, loss trajectory).
-    """
-    if batch_size > x_train.shape[0]:
-        raise ValueError("Batch size cannot be larger than the dataset size.")
-
-    freeze_mask = eqx.is_inexact_array if freeze_mask is None else freeze_mask
-
-    def get_loss(_diff_model, _static_model, _x_batch):
-        _joint_model = eqx.combine(_diff_model, _static_model)
-        _ys_dummy = jnp.zeros((_x_batch.shape[0],), dtype=float)
-        _loss = loss_fn(_joint_model, _x_batch, _ys_dummy)
-        return _loss
-
-    @eqx.filter_jit
-    def batch_step(_model, _x_batch, _optim_state):
-        _diff_model, _static_model = eqx.partition(
-            _model, freeze_mask, is_leaf=eqx.is_inexact_array
-        )
-        _loss, _grads = eqx.filter_value_and_grad(get_loss)(
-            _diff_model, _static_model, _x_batch
-        )
-        _updates, _new_optim_state = optimizer.update(
-            _grads,
-            _optim_state,
-            _diff_model,
-            value=_loss,
-            grad=_grads,
-            value_fn=lambda _x: get_loss(_x, _static_model, _x_batch),
-        )
-        _new_model = eqx.apply_updates(_model, _updates)
-        _delta = compute_difference(_model, _new_model)
-        _grad_mag = compute_grad_mag(_grads)
-        return _loss, _delta, _grad_mag, _new_model, _new_optim_state
-
-    data_iter = dataloader((x_train,), batch_size, key=key)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
-
-    loss_traj = []
-
-    do_plots = (
-        log_interval > 0
-        and plot_xs is not None
-        and plot_grid is not None
-        and ts is not None
-        and specification is not None
-    )
-    specification_kwargs = {} if specification_kwargs is None else specification_kwargs
-
-    pbar = tqdm(range(epochs), total=epochs, disable=not verbose)
-    for epoch_idx in pbar:
-        (x_batch,) = next(data_iter)
-        try:
-            loss, delta_mag, grad_mag, model, opt_state = batch_step(
-                model, x_batch, opt_state
-            )
-        except Exception:  # pylint: disable=broad-except
-            tqdm.write(f"Stopped due to error raised: {epochs} epochs")
-            traceback.print_exc()
-            break
-
-        loss_val = float(loss)
-        loss_traj.append(loss_val)
-        if x_holdout is not None and specification is not None and ts is not None:
-            holdout_ros = _robustnesses(model, x_holdout, ts, specification, **specification_kwargs)
-            if wandb.run is not None:
-                wandb.log(
-                    {
-                        "holdout_mean_robustness": float(jnp.mean(holdout_ros)),
-                        "holdout_frac_satisfied": float(jnp.mean(holdout_ros >= 0.0)),
-                    },
-                    commit=False,
-                )
-        if wandb.run is not None:
-            wandb.log(
-                {
-                    "loss": loss_val,
-                    "grad_mag": float(grad_mag),
-                    "delta_mag": float(delta_mag),
-                }
-            )
-        if early_stop is not None and loss_val <= early_stop:
-            if verbose:
-                tqdm.write(
-                    "Early stopping: loss reached "
-                    f"{loss_val:.6g} <= {float(early_stop):.6g} "
-                    f"at epoch {epoch_idx + 1}."
-                )
-            break
-        if do_plots and (epoch_idx + 1) % log_interval == 0:
-            _log_contour_plots(
-                model,
-                plot_xs,
-                plot_grid,
-                ts,
-                specification,
-                specification_kwargs,
-                epoch_idx + 1,
-                loss_name,
-                boundary_xs=boundary_xs,
-            )
-        pbar.set_description(
-            f"Loss: {loss:.4f}, Delta Mag: {delta_mag:.4f}, Grad Mag: {grad_mag:.4f}"
-        )
-    else:
-        if verbose:
-            tqdm.write(f"Reached the end of the {epochs} epochs")
-    return model, loss_traj
-
-
-class ClassModel(BioSyst):
+class ClassModel(BioModel):
     """
     Implements a system with an NFC + a fluorescent protein
     """
@@ -628,12 +203,15 @@ def create_dataset(n_samples: int, max_val=1.0, boundary_frac: float = 0.0, key=
         t4 = jax.random.uniform(k4, (n_per_edge,), maxval=max_val)
         zeros = jnp.zeros(n_per_edge)
         ones = jnp.full(n_per_edge, max_val)
-        boundary_pts = jnp.concatenate([
-            jnp.stack([t1, zeros], axis=1),   # bottom edge (y=0)
-            jnp.stack([t2, ones], axis=1),    # top edge (y=max_val)
-            jnp.stack([zeros, t3], axis=1),   # left edge (x=0)
-            jnp.stack([ones, t4], axis=1),    # right edge (x=max_val)
-        ], axis=0)
+        boundary_pts = jnp.concatenate(
+            [
+                jnp.stack([t1, zeros], axis=1),  # bottom edge (y=0)
+                jnp.stack([t2, ones], axis=1),  # top edge (y=max_val)
+                jnp.stack([zeros, t3], axis=1),  # left edge (x=0)
+                jnp.stack([ones, t4], axis=1),  # right edge (x=max_val)
+            ],
+            axis=0,
+        )
         n_replace = boundary_pts.shape[0]
         x_train = jnp.concatenate([x_train[:-n_replace], boundary_pts], axis=0)
 
@@ -783,12 +361,15 @@ def train_model(
         t4 = jax.random.uniform(bk4, (n_bvis_per_edge,))
         z = jnp.zeros(n_bvis_per_edge)
         o = jnp.ones(n_bvis_per_edge)
-        x_boundary_plot = jnp.concatenate([
-            jnp.stack([t1, z], axis=1),
-            jnp.stack([t2, o], axis=1),
-            jnp.stack([z, t3], axis=1),
-            jnp.stack([o, t4], axis=1),
-        ], axis=0)
+        x_boundary_plot = jnp.concatenate(
+            [
+                jnp.stack([t1, z], axis=1),
+                jnp.stack([t2, o], axis=1),
+                jnp.stack([z, t3], axis=1),
+                jnp.stack([o, t4], axis=1),
+            ],
+            axis=0,
+        )
 
     if n_holdout > 0:
         if boundary_frac > 0:
@@ -805,12 +386,15 @@ def train_model(
                 th4 = jax.random.uniform(hbk4, (n_hb_per_edge,))
                 zh = jnp.zeros(n_hb_per_edge)
                 oh = jnp.ones(n_hb_per_edge)
-                x_holdout_bnd = jnp.concatenate([
-                    jnp.stack([th1, zh], axis=1),
-                    jnp.stack([th2, oh], axis=1),
-                    jnp.stack([zh, th3], axis=1),
-                    jnp.stack([oh, th4], axis=1),
-                ], axis=0)
+                x_holdout_bnd = jnp.concatenate(
+                    [
+                        jnp.stack([th1, zh], axis=1),
+                        jnp.stack([th2, oh], axis=1),
+                        jnp.stack([zh, th3], axis=1),
+                        jnp.stack([oh, th4], axis=1),
+                    ],
+                    axis=0,
+                )
                 x_holdout = jnp.concatenate([x_holdout_int, x_holdout_bnd], axis=0)
             else:
                 x_holdout = x_holdout_int
@@ -857,17 +441,14 @@ def train_model(
             ts=ts,
             specification=specification,
             specification_kwargs=spec_kwargs,
-            loss_name=loss_name,
+            elem_loss_fn=_get_elementwise_loss(loss_name, trainable),
             early_stop=early_stop,
             x_holdout=x_holdout,
             boundary_xs=x_boundary_plot,
             key=key,
         )
         if loss_name == "slack_relu":
-            print(
-                "SlackReLU optimized margin C="
-                f"{float(trained_model.slack):.6g}"
-            )
+            print(f"SlackReLU optimized margin C={float(trained_model.slack):.6g}")
         # Unwrap if we used a model wrapper
         if wrap_model is not None:
             trained_syst = trained_model.model
@@ -1050,11 +631,9 @@ def repeat_training(
     dgmsr_p: int = 3,
     smooth_temperature: float = 1.0,
 ):
-    keys = jax.random.split(key, num=n)
-
-    info = {}
     all_params = []
-    for i, ki in enumerate(keys):
+
+    def _run_one(seed_idx, ki):
         trained_sim, loss_traj = run_training(
             layer_sizes,
             epochs=epochs,
@@ -1066,7 +645,7 @@ def repeat_training(
             integral=integral,
             n_points=n_points,
             wandb_project=wandb_project,
-            seed_idx=i,
+            seed_idx=seed_idx,
             log_interval=log_interval,
             n_holdout=n_holdout,
             boundary_frac=boundary_frac,
@@ -1079,16 +658,15 @@ def repeat_training(
             dgmsr_p=dgmsr_p,
             smooth_temperature=smooth_temperature,
         )
-
-        info.update(
-            {f"{i}": [len(loss_traj), loss_traj[-1] if loss_traj else float(jnp.inf)]}
-        )
         leaves = jax.tree_util.tree_leaves(
             eqx.filter(trained_sim, eqx.is_inexact_array)
         )
         flat_params = jnp.concatenate([l.flatten() for l in leaves])
         print(flat_params)
         all_params.append(flat_params)
+        return trained_sim, loss_traj
+
+    info = run_suite(_run_one, n, key=key)
 
     # Log 3D point cloud of learned parameters to wandb
     if wandb_project and all_params:
@@ -1192,8 +770,12 @@ def main(cfg: TrainConfig):
     archs = [(2, 1), (2, 1, 1)]
 
     dataset_key, key = jax.random.split(key)
-    x_train, _ = create_dataset(n_samples=cfg.n_samples, max_val=1.0,
-                                 boundary_frac=cfg.boundary_frac, key=dataset_key)
+    x_train, _ = create_dataset(
+        n_samples=cfg.n_samples,
+        max_val=1.0,
+        boundary_frac=cfg.boundary_frac,
+        key=dataset_key,
+    )
 
     info = analyze_layer_sizes(
         archs,

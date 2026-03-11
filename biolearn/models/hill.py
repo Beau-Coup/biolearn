@@ -1,8 +1,11 @@
-from typing import List
+from typing import List, Tuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jaxtyping as jt
+
+from biolearn.models.base import BioModel, SimulateConfig
 
 
 class EdgeType(eqx.Enumeration):
@@ -170,6 +173,30 @@ class BioGNN(eqx.Module):
         dx = dx + dx_agg
 
         return self.nu * dx - self.decay * x + self.growth
+
+
+class BioGnnModel(BioModel):
+    model: BioGNN
+
+    def ode_step(self, t: jt.ScalarLike, y: jax.Array, args: Tuple) -> jax.Array:
+        return self.model(y)
+
+    def simulate(
+        self,
+        x0: jax.Array,
+        config: SimulateConfig = SimulateConfig(
+            to_ss=False,
+            stiff=True,
+            throw=True,
+            max_steps=int(1e6),
+            rtol=1e-6,
+            atol=1e-6,
+            max_stepsize=None,
+            progress_bar=False,
+        ),
+    ):
+        ts = jnp.linspace(0, 40, num=40_000)
+        return self._simulate(x0, ts, config)
 
 
 if __name__ == "__main__":

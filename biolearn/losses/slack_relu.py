@@ -13,8 +13,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from biolearn.models.nfc import BioSyst
-
+from ..models.nfc import BioModel
 from .base import make_slack_loss
 
 
@@ -32,10 +31,10 @@ class SlackModel(eqx.Module):
         trained_model = trained_wrapped.model
     """
 
-    model: BioSyst
+    model: BioModel
     slack_raw: jax.Array
 
-    def __init__(self, model: BioSyst):
+    def __init__(self, model: BioModel):
         self.model = model
         self.slack_raw = jnp.asarray(0.1)
 
@@ -60,7 +59,9 @@ def slack_relu_ic_loss(
     :class:`SlackModel` so the loss can read the slack variables.
     """
     return make_slack_loss(
-        slack_group_loss=lambda ros, slack: (jax.nn.relu(slack - ros) - C * slack).mean(),
+        slack_group_loss=lambda ros, slack: (
+            jax.nn.relu(slack - ros) - C * slack
+        ).mean(),
         specification=specification,
         ts=ts,
         **kwargs,

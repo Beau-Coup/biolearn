@@ -5,7 +5,7 @@ by Eric Palanques-Tost, Hanna Krasowski, Murat Arcak, Ron Weiss, Calin Belta
 """
 
 from abc import abstractmethod
-from typing import Any, List, Optional, Sequence, Tuple, Type, final
+from typing import List, Optional, Sequence, Tuple, Type, final
 
 import diffrax
 import equinox as eqx
@@ -14,91 +14,7 @@ import jax.numpy as jnp
 import jaxtyping as jt
 
 from .activations import NonNegativeLinear
-
-
-class BioSyst(eqx.Module):
-    """
-    Base class to create biological systems inheriting the diffeqsolve function.
-    """
-
-    @abstractmethod
-    def diffrax_step(self, t: jt.ScalarLike, y: jax.Array, args: Tuple) -> jax.Array:
-        """
-        ODE step for the model.
-        Args:
-            t: time
-            y: state vector
-            args: additional arguments
-        Returns:
-            dydt: the derivative of the state vector y
-        """
-        raise NotImplementedError()
-
-    def _simulate(
-        self,
-        y0: jt.Float[jt.Array, "..."],
-        ts: Optional[jax.Array],
-        to_ss: bool = False,
-        args: Tuple[Any, ...] = (),
-        stiff: bool = True,
-        throw: bool = True,
-        max_steps: int = int(1e6),
-        rtol: float = 1e-10,
-        atol: float = 1e-10,
-        max_stepsize: Optional[int] = None,
-        progress_bar: bool = True,
-    ):
-        stepsize_controller = diffrax.PIDController(
-            pcoeff=0.3 if stiff else 0.0,
-            icoeff=0.3 if stiff else 1.0,
-            dcoeff=0,
-            rtol=rtol,
-            atol=atol,
-            dtmax=max_stepsize,
-            dtmin=1e-10,
-        )
-
-        if to_ss:
-            saveat = diffrax.SaveAt(t1=True)
-            event = diffrax.Event(
-                diffrax.steady_state_event(rtol=2 * rtol, atol=2 * atol)
-            )
-            t0, t1, dt0 = 0.0, jnp.inf, None
-        else:
-            saveat = diffrax.SaveAt(ts=ts)
-            event = None
-            assert ts is not None
-            t0, t1, dt0 = ts[0], ts[-1], 0.001
-
-        progress_bar = (
-            diffrax.TqdmProgressMeter() if progress_bar else diffrax.NoProgressMeter()
-        )
-        solver = diffrax.Kvaerno5() if stiff else diffrax.Tsit5()
-
-        term = diffrax.ODETerm(self.diffrax_step)
-
-        solution = diffrax.diffeqsolve(
-            term,
-            solver,
-            t0=t0,
-            t1=t1,
-            dt0=dt0,
-            y0=y0,
-            saveat=saveat,
-            stepsize_controller=stepsize_controller,
-            max_steps=max_steps,
-            throw=throw,
-            args=args,
-            progress_meter=progress_bar,
-            event=event,
-        )
-
-        y_pred = solution.ys
-
-        return y_pred, solution
-
-    def simulate(self, *args, **kwargs):
-        raise NotImplementedError
+from .base import BioModel, SimulateConfig
 
 
 class NFCNodeBase(eqx.Module):
@@ -440,7 +356,7 @@ class NFCLayer(eqx.Module):
         return list(filter(eqx.is_inexact_array, jax.tree_util.tree_leaves(self)))
 
 
-class NFC(BioSyst):
+class NFC(BioModel):
     """
     Base class for an NFC model
     """
@@ -497,7 +413,7 @@ class NFC(BioSyst):
     def out_nodes(self):
         return self.layers[-1].n_nodes
 
-    def ode_step(self, x: jax.Array, z: jax.Array) -> jax.Array:
+    def ode_step(self, x: jax.Array, z: jax.Array, args: Tuple = ()) -> jax.Array:
         """
         Calculates the ODE step for the NFC model.
         Args:
@@ -561,14 +477,16 @@ class NFC(BioSyst):
         x: jax.Array | jax.Array,
         ts: Optional[jax.Array],
         x_ts: Optional[jax.Array] = None,
-        to_ss: bool = False,
-        stiff: bool = True,
-        throw: bool = True,
-        max_steps: int = int(1e6),
-        rtol: float = 1e-10,
-        atol: float = 1e-10,
-        max_stepsize: Optional[int] = None,
-        progress_bar: bool = True,
+        config: SimulateConfig = SimulateConfig(
+            to_ss=False,
+            stiff=True,
+            throw=True,
+            max_steps=int(1e6),
+            rtol=1e-10,
+            atol=1e-10,
+            max_stepsize=None,
+            progress_bar=True,
+        ),
     ) -> Tuple[jnp.ndarray, diffrax.Solution]:
         """
         Simulates the NFC evolution for a fixed input (using diffrax).
@@ -619,21 +537,9 @@ class NFC(BioSyst):
             )
 
         y0 = jnp.zeros(self.shape)
-        args = (self._handle_inputs(x, x_ts),)
+        config.args = (self._handle_inputs(x, x_ts),)
 
-        ys, sol = self._simulate(
-            y0=y0,
-            ts=ts,
-            to_ss=to_ss,
-            args=args,
-            stiff=stiff,
-            throw=throw,
-            max_steps=max_steps,
-            rtol=rtol,
-            atol=atol,
-            max_stepsize=max_stepsize,
-            progress_bar=progress_bar,
-        )
+        ys, sol = self._simulate(y0, ts, config)
         return ys, sol
 
     def ss_estimation(
