@@ -1,25 +1,5 @@
 import jax
 
-from .base import make_loss
-
-
-def _activation_loss_factory(group_loss):
-    def ic_loss(specification, ts, *, domain=None, n_points=128, key=None,
-                n_boundary_points: int = 0, **kwargs):
-        return make_loss(
-            group_loss=group_loss,
-            specification=specification,
-            ts=ts,
-            domain=domain,
-            n_points=n_points,
-            key=key,
-            n_boundary_points=n_boundary_points,
-            **kwargs,
-        )
-
-    return ic_loss
-
-
 activations = {
     "relu": lambda r: jax.nn.relu(-r).mean(),
     "sigmoid": lambda r: jax.nn.sigmoid(-r).mean(),
@@ -31,7 +11,3 @@ activations = {
     "leaky_relu": lambda r: jax.nn.leaky_relu(-r).mean(),
     "elu": lambda r: jax.nn.elu(-5.0 * r).mean(),
 }
-
-_g = globals()
-for _name, _fn in activations.items():
-    _g[f"make_{_name}_loss"] = _activation_loss_factory(_fn)

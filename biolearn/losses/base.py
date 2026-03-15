@@ -13,6 +13,11 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from ..models import BioModel
+from ..models.base import SimulateConfig
+
+_DEFAULT_SIM_CONFIG = SimulateConfig(
+    to_ss=False, stiff=True, rtol=1e-6, atol=1e-6, progress_bar=False
+)
 
 
 def _default_traj_fn(x0, y_trace):
@@ -22,21 +27,14 @@ def _default_traj_fn(x0, y_trace):
     return jnp.concatenate([x_traj, y_out], axis=1)
 
 
-def _robustnesses(system, xs, ts, specification, traj_fn=None, **kwargs):
+def _robustnesses(system, xs, ts, specification, traj_fn=None, config=None, **kwargs):
     """Simulate each initial condition and return per-sample robustnesses."""
     _make_traj = traj_fn if traj_fn is not None else _default_traj_fn
+    if config is None:
+        config = _DEFAULT_SIM_CONFIG
 
     def _run_single(x0):
-        y_trace, _ = system.simulate(
-            x=x0,
-            ts=ts,
-            to_ss=False,
-            stiff=True,
-            max_steps=int(1e6),
-            rtol=1e-6,
-            atol=1e-6,
-            progress_bar=False,
-        )
+        y_trace, _ = system.simulate(x=x0, ts=ts, config=config)
         traj = _make_traj(x0, y_trace)
         return specification(traj, **kwargs)
 
@@ -52,6 +50,7 @@ def make_loss(
     key: "jax.Array | None" = None,
     n_boundary_points: int = 0,
     traj_fn=None,
+    config: "SimulateConfig | None" = None,
     **kwargs,
 ):
     """Create a compiled loss function.
@@ -71,6 +70,7 @@ def make_loss(
             specification=specification,
             ts=ts,
             traj_fn=traj_fn,
+            config=config,
             **kwargs,
         )
 
@@ -86,7 +86,9 @@ def make_loss(
 
     @eqx.filter_jit
     def _loss(system: BioModel, xs, _ys):
-        ros = _robustnesses(system, xs, ts, specification, traj_fn=traj_fn, **kwargs)
+        ros = _robustnesses(
+            system, xs, ts, specification, traj_fn=traj_fn, config=config, **kwargs
+        )
         return group_loss(ros)
 
     return _loss
@@ -97,6 +99,7 @@ def make_slack_loss(
     specification: Callable[[jax.Array], jax.Array],
     ts: jax.Array,
     traj_fn=None,
+    config: "SimulateConfig | None" = None,
     **kwargs,
 ):
     """Like ``make_loss`` but for losses that use a learnable slack variable.
@@ -107,7 +110,9 @@ def make_slack_loss(
 
     @eqx.filter_jit
     def _loss(system, xs, _ys):
-        ros = _robustnesses(system, xs, ts, specification, traj_fn=traj_fn, **kwargs)
+        ros = _robustnesses(
+            system, xs, ts, specification, traj_fn=traj_fn, config=config, **kwargs
+        )
         return slack_group_loss(ros, system.slack)
 
     return _loss
@@ -130,6 +135,7 @@ def make_integral_loss(
     specification: Callable[[jax.Array], jax.Array],
     ts: jax.Array,
     traj_fn=None,
+    config: "SimulateConfig | None" = None,
     **kwargs,
 ):
     """Monte-Carlo integration loss.
@@ -168,7 +174,13 @@ def make_integral_loss(
 
         all_points = jnp.concatenate([points, boundary_points], axis=0)
         ros = _robustnesses(
-            system, all_points, ts, specification, traj_fn=traj_fn, **kwargs
+            system,
+            all_points,
+            ts,
+            specification,
+            traj_fn=traj_fn,
+            config=config,
+            **kwargs,
         )
         return weighting_fn(ros)
 
