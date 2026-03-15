@@ -15,6 +15,7 @@ class HK25(Task):
     def __init__(self):
         self.domain_hi = jnp.ones(6)
         self.domain_low = jnp.zeros_like(self.domain_hi)
+        self.ts = jnp.arange(0, 25, 1.0)
 
         # The spec for evaluating satisfaction, not for gradients
         self.spec = FastProduce("classical")

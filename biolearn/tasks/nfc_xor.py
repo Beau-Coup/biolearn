@@ -14,6 +14,7 @@ class NfcXor(Task):
     def __init__(self, key: jax.Array, layer_sizes):
         self.domain_hi = jnp.ones(2)
         self.domain_low = jnp.zeros_like(self.domain_hi)
+        self.ts = jnp.arange(0, 20, 1.0)
 
         # The spec for evaluating satisfaction, not for gradients
         self.spec = PhiXorFast(semantics="classical")
@@ -30,10 +31,19 @@ class NfcXor(Task):
 
         self.eval_set = self._generate_eval_points(key2, 512)
 
+    def traj_fn(self, x0, y_trace):
+        """XOR: repeat 2D input + last species output."""
+        x_traj = jnp.repeat(jnp.array([[x0[0], x0[1]]]), y_trace.shape[0], axis=0)
+        y_out = y_trace[:, -1][:, None]
+        return jnp.concatenate([x_traj, y_out], axis=1)
+
     def _generate_eval_points(self, key: jax.Array, n_points: int) -> jax.Array:
         # Sample from the domain and measure the satisfaction rate
         eval_points = jr.uniform(
-            key, (n_points, 6), minval=self.domain_low, maxval=self.domain_hi
+            key,
+            (n_points, self.domain_low.shape[0]),
+            minval=self.domain_low,
+            maxval=self.domain_hi,
         )
 
         # Generate samples on the boundary of the domain.
