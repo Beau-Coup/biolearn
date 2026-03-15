@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import jaxtyping as jt
 
-from biolearn.models.base import BioModel, SimulateConfig
+from .base import BioModel, SimulateConfig
 
 
 class EdgeType(eqx.Enumeration):

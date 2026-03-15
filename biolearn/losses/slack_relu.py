@@ -13,7 +13,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from ..models.nfc import BioModel
+from ..models import BioModel
 from .base import make_slack_loss
 
 

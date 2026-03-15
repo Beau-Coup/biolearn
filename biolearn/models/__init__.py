@@ -1,3 +1,3 @@
-from .base import BioModel
-from .hill import BioGnnModel
+from .base import BioModel, SimulateConfig
+from .hill import BioGNN, BioGnnModel, EdgeType
 from .nfc import NFC, MoormanNFC
