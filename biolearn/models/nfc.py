@@ -525,12 +525,12 @@ class NFC(BioModel):
                     f"Time-series for the input doesn't match "
                     f"the input length ts_x: {ts.shape}, x: {x.shape}"
                 )
-        if (ts is None) and (not to_ss):
+        if (ts is None) and (not config.to_ss):
             raise ValueError(
                 "If the simulation is not to steady-state, a time array "
                 "for the simulation should be provided."
             )
-        if to_ss and (ts is not None):
+        if config.to_ss and (ts is not None):
             raise ValueError(
                 "If the simulation is to steady-state, a time array "
                 "for the simulation should not be provided."
