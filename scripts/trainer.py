@@ -1,9 +1,20 @@
 """Shared training config and loss creation for biolearn experiment scripts."""
 
+import os
+
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
+os.environ["XLA_FLAGS"] = "--xla_gpu_enable_triton_gemm=false"
+
 import dataclasses
 from typing import Literal, Optional
 
 import jax
+
+jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 2.0)
+
 import jax.numpy as jnp
 import optax
 from training_suite import train
