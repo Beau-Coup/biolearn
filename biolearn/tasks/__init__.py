@@ -13,6 +13,7 @@ class Task:
     model: BioModel  # The model type
 
     ts: jax.Array  # Simulation time domain
+    eval_set: jax.Array  # Set of points to test on
 
     def traj_fn(self, x0, y_trace):
         """Convert raw simulation output to spec-compatible trajectory."""

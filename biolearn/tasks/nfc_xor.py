@@ -34,7 +34,7 @@ class NfcXor(Task):
     def traj_fn(self, x0, y_trace):
         """XOR: repeat 2D input + last species output."""
         x_traj = jnp.repeat(jnp.array([[x0[0], x0[1]]]), y_trace.shape[0], axis=0)
-        y_out = y_trace[:, -1][:, None]
+        y_out = y_trace[:, -1]
         return jnp.concatenate([x_traj, y_out], axis=1)
 
     def _generate_eval_points(self, key: jax.Array, n_points: int) -> jax.Array:
