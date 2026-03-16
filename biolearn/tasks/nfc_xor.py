@@ -57,9 +57,26 @@ class NfcXor(Task):
         """Evaluate the robustness of the model w.r.t. the fixed evaluation points.
         Acts as a test set for the task.
         """
-        if not config:
-            trajectories = self.model.simulate(self.eval_set)
-        else:
-            trajectories = self.model.simulate(self.eval_set, config)
 
-        return self.spec.evaluate(trajectories)
+        cfg = (
+            config
+            if config
+            else SimulateConfig(
+                to_ss=False,
+                stiff=True,
+                throw=True,
+                max_steps=int(1e6),
+                rtol=1e-10,
+                atol=1e-10,
+                max_stepsize=None,
+                progress_bar=True,
+            )
+        )
+
+        def _eval_single(x0):
+            y_trace, _ = self.model.simulate(x0, ts=self.ts, config=cfg)
+            return self.spec.evaluate(y_trace)
+
+        run = jax.vmap(_eval_single)
+
+        return run(self.eval_set)

@@ -221,8 +221,11 @@ def train_one(
     )
     if cfg.boundary_frac > 0:
         n_boundary = round(cfg.n_samples * cfg.boundary_frac)
+        d = task.domain_low.shape[0]
+        n_faces = d * 2 ** (d - 1)
+        n_per_face = max(1, n_boundary // n_faces)
         boundary_pts = sample_hypercube_faces(
-            boundary_key, task.domain_low, task.domain_hi, n_per_face=n_boundary
+            boundary_key, task.domain_low, task.domain_hi, n_per_face=n_per_face, max_k=1
         )
         x_train = jnp.concatenate([x_train[: -boundary_pts.shape[0]], boundary_pts])
 

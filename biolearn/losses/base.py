@@ -153,8 +153,11 @@ def make_integral_loss(
         key: jax.Array, system: BioModel, n_points: int, n_boundary_points: int
     ):
         key, bkey = jr.split(key)
+        d = domain.low.shape[0]
+        n_faces = d * 2 ** (d - 1)
+        n_per_face = max(1, n_boundary_points // n_faces)
         boundary_points = sample_hypercube_faces(
-            bkey, domain.low, domain.high, n_per_face=n_boundary_points
+            bkey, domain.low, domain.high, n_per_face=n_per_face, max_k=1
         )
         points = jr.uniform(
             key,
