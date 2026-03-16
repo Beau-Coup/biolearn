@@ -1,6 +1,6 @@
 import jax
 import pystl
-from pystl.api import Formula, Semantics, Signal
+from pystl.api import Formula, Semantics
 
 
 def get_semantics(semantics: str, dgmsr_p: int, smooth_temperature: float):
@@ -30,5 +30,5 @@ class BaseSpec:
         self,
         traj: jax.Array,
     ) -> jax.Array:
-        rho = self.spec.evaluate(Signal(traj), self.semantics, t=0)
+        rho = self.spec.evaluate(traj, self.semantics, t=0)
         return rho.squeeze()

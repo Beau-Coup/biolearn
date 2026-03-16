@@ -37,7 +37,7 @@ class PhiXorFast(BaseSpec):
         phi2 = pystl.Eventually(pystl.Always(err_lowest))
         phi = phi1 & phi2
 
-        self.sematics = get_semantics(semantics, dgmsr_p, smooth_temperature)
+        self.semantics = get_semantics(semantics, dgmsr_p, smooth_temperature)
         self.spec = phi
 
     def evaluate(
@@ -48,7 +48,7 @@ class PhiXorFast(BaseSpec):
         y_true = jax.nn.relu(x_diff - 0.1) + jax.nn.relu(-x_diff - 0.1)
         y_pred = traj[:, 2]
         err = jnp.abs(y_true - y_pred)
-        ro = self.spec.evaluate(Signal(err), self.semantics, t=0)
+        ro = self.spec.evaluate(err, self.semantics, t=0)
         return jnp.asarray(ro).squeeze()
 
 
