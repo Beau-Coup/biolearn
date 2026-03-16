@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -178,12 +178,13 @@ class BioGNN(eqx.Module):
 class BioGnnModel(BioModel):
     model: BioGNN
 
-    def ode_step(self, t: jt.ScalarLike, y: jax.Array, args: Tuple) -> jax.Array:
+    def diffrax_step(self, t: jt.ScalarLike, y: jax.Array, args: Tuple) -> jax.Array:
         return self.model(y)
 
     def simulate(
         self,
-        x0: jax.Array,
+        x: jax.Array,
+        ts: Optional[jax.Array],
         config: SimulateConfig = SimulateConfig(
             to_ss=False,
             stiff=True,
@@ -195,8 +196,9 @@ class BioGnnModel(BioModel):
             progress_bar=False,
         ),
     ):
-        ts = jnp.linspace(0, 40, num=40_000)
-        return self._simulate(x0, ts, config)
+        if ts is None:
+            ts = jnp.linspace(0, 40, num=40_000)
+        return self._simulate(x, ts, config)
 
 
 if __name__ == "__main__":

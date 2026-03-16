@@ -29,7 +29,7 @@ class BioModel(eqx.Module):
     """
 
     @abstractmethod
-    def ode_step(self, t: jt.ScalarLike, y: jax.Array, args: Tuple) -> jax.Array:
+    def diffrax_step(self, t: jt.ScalarLike, y: jax.Array, args: Tuple) -> jax.Array:
         """
         ODE step for the model.
         Args:
@@ -39,7 +39,7 @@ class BioModel(eqx.Module):
         Returns:
             dydt: the derivative of the state vector y
         """
-        raise NotImplementedError()
+        raise NotImplementedError
 
     def _simulate(
         self,
@@ -76,7 +76,7 @@ class BioModel(eqx.Module):
         )
         solver = diffrax.Kvaerno5() if config.stiff else diffrax.Tsit5()
 
-        term = diffrax.ODETerm(self.ode_step)
+        term = diffrax.ODETerm(self.diffrax_step)
 
         solution = diffrax.diffeqsolve(
             term,
