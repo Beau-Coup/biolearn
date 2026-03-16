@@ -5,7 +5,7 @@ A loss function evaluates a trajectory
 Author: Alex Beaudin
 """
 
-from typing import Callable
+from typing import Callable, Union
 
 import equinox as eqx
 import jax
@@ -13,8 +13,9 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from ..models import BioModel
-from ..utils import sample_hypercube_faces
 from ..models.base import SimulateConfig
+from ..utils import sample_hypercube_faces
+from .slack_relu import SlackModel
 
 _DEFAULT_SIM_CONFIG = SimulateConfig(
     to_ss=False, stiff=True, rtol=1e-6, atol=1e-6, progress_bar=False
@@ -99,6 +100,10 @@ def make_slack_loss(
     slack_group_loss: Callable[[jax.Array, jax.Array], jax.Array],
     specification: Callable[[jax.Array], jax.Array],
     ts: jax.Array,
+    domain: "BoxDomain | None" = None,
+    n_points: int = 128,
+    key: "jax.Array | None" = None,
+    n_boundary_points: int = 0,
     traj_fn=None,
     config: "SimulateConfig | None" = None,
     **kwargs,
@@ -108,6 +113,27 @@ def make_slack_loss(
     ``slack_group_loss`` receives ``(robustnesses, slack)`` where *slack* is
     the scalar from :class:`~biolearn.losses.slack_relu.SlackModel`.
     """
+    if domain is not None:
+        assert key is not None, "key is required when domain is set"
+        _integral_fn = make_integral_loss(
+            weighting_fn=slack_group_loss,
+            domain=domain,
+            specification=specification,
+            ts=ts,
+            traj_fn=traj_fn,
+            config=config,
+            **kwargs,
+        )
+
+        @eqx.filter_jit
+        def _loss_integral(system: BioModel, xs, _ys):
+            hash_val = jnp.bitwise_xor.reduce(
+                jax.lax.bitcast_convert_type(xs.flatten(), jnp.int32)
+            )
+            step_key = jax.random.fold_in(key, hash_val.sum())
+            return _integral_fn(step_key, system, n_points, n_boundary_points)
+
+        return _loss_integral
 
     @eqx.filter_jit
     def _loss(system, xs, _ys):
@@ -131,7 +157,7 @@ class BoxDomain(eqx.Module):
 
 
 def make_integral_loss(
-    weighting_fn: Callable[[jax.Array], jax.Array],
+    weighting_fn: Callable,
     domain: BoxDomain,
     specification: Callable[[jax.Array], jax.Array],
     ts: jax.Array,
@@ -150,7 +176,10 @@ def make_integral_loss(
 
     @eqx.filter_jit
     def _estimate_integral(
-        key: jax.Array, system: BioModel, n_points: int, n_boundary_points: int
+        key: jax.Array,
+        system: Union[BioModel, SlackModel],
+        n_points: int,
+        n_boundary_points: int,
     ):
         key, bkey = jr.split(key)
         d = domain.low.shape[0]
@@ -179,6 +208,9 @@ def make_integral_loss(
             config=config,
             **kwargs,
         )
-        return weighting_fn(ros)
+        if isinstance(system, BioModel):
+            return weighting_fn(ros)
+        else:
+            return weighting_fn(ros, system.slack)
 
     return _estimate_integral
