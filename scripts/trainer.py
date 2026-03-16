@@ -16,6 +16,7 @@ from biolearn.losses.slack_softmax import slack_softmax_loss
 from biolearn.losses.soft_relu import make_softrelu_loss
 from biolearn.specifications.common import BaseSpec
 from biolearn.tasks import Task
+from biolearn.utils import sample_hypercube_faces
 
 LossType = Literal[
     "relu",
@@ -60,15 +61,16 @@ class TrainConfig:
     n_seeds: int = 3
     """Number of random seeds to train with."""
     n_samples: int = 121
-    """Number of samples (should be a perfect square)."""
+    """Number of training points sampled uniformly from the task domain."""
     show: bool = False
     """Show plots after training."""
     save: bool = True
     """Save results to disk."""
     integral: bool = False
-    """Use Monte-Carlo integral loss over the input domain."""
+    """Use Monte-Carlo integral loss: each loss call samples its own points
+    from the task domain instead of using the fixed training dataset."""
     n_points: int = 128
-    """Number of MC sample points when --integral is set."""
+    """Number of interior points sampled per loss evaluation when --integral is set."""
     wandb_project: str = "biolearn"
     """Weights & Biases project name."""
     log_interval: int = 100
@@ -76,7 +78,11 @@ class TrainConfig:
     n_holdout: int = 0
     """Number of holdout initial conditions to track per epoch (0 = disabled)."""
     boundary_frac: float = 0.0
-    """Fraction of samples drawn from domain boundary edges (0 = disabled)."""
+    """Fraction of points placed on domain boundary faces via
+    sample_hypercube_faces. Applies to the training dataset (non-integral)
+    and to each loss evaluation (--integral). 0 disables boundary sampling."""
+    batch_size: int = 64
+    """Mini-batch size for shuffled training."""
 
 
 def make_task_loss(loss_name, spec, ts, **kwargs):
@@ -195,13 +201,19 @@ def train_one(
         optimizer = optax.adabelief(learning_rate=lr_schedule)
 
     # Generate training data from task domain
-    dataset_key, train_key = jax.random.split(train_key)
+    dataset_key, boundary_key, train_key = jax.random.split(train_key, 3)
     x_train = jax.random.uniform(
         dataset_key,
         (cfg.n_samples, task.domain_low.shape[0]),
         minval=task.domain_low,
         maxval=task.domain_hi,
     )
+    if cfg.boundary_frac > 0:
+        n_boundary = round(cfg.n_samples * cfg.boundary_frac)
+        boundary_pts = sample_hypercube_faces(
+            boundary_key, task.domain_low, task.domain_hi, n_per_face=n_boundary
+        )
+        x_train = jnp.concatenate([x_train[: -boundary_pts.shape[0]], boundary_pts])
 
     # Build specification kwargs with traj_fn
     specification_kwargs = {"traj_fn": task.traj_fn}
@@ -220,7 +232,7 @@ def train_one(
         optimizer=optimizer,
         loss_fn=loss_fn,
         epochs=cfg.epochs,
-        batch_size=x_train.shape[0],
+        batch_size=cfg.batch_size,
         x_train=x_train,
         early_stop=cfg.early_stop,
         log_interval=cfg.log_interval,

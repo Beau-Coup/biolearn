@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from ..models import BioModel
+from ..utils import sample_hypercube_faces
 from ..models.base import SimulateConfig
 
 _DEFAULT_SIM_CONFIG = SimulateConfig(
@@ -151,17 +152,10 @@ def make_integral_loss(
     def _estimate_integral(
         key: jax.Array, system: BioModel, n_points: int, n_boundary_points: int
     ):
-        key, sub1, sub2, sub3 = jr.split(key, 4)
-        d = domain.low.shape[0]
-        fixed_dim = jr.randint(sub1, (n_boundary_points,), 0, d)
-        side = jr.randint(sub2, (n_boundary_points,), 0, 2)
-        boundary_points = jr.uniform(
-            sub3, (n_boundary_points, d), minval=domain.low, maxval=domain.high
+        key, bkey = jr.split(key)
+        boundary_points = sample_hypercube_faces(
+            bkey, domain.low, domain.high, n_per_face=n_boundary_points
         )
-        fixed_val = jnp.where(side == 0, domain.low[fixed_dim], domain.high[fixed_dim])
-        boundary_points = boundary_points.at[
-            jnp.arange(n_boundary_points), fixed_dim
-        ].set(fixed_val)
         points = jr.uniform(
             key,
             (
