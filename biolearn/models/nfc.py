@@ -219,15 +219,17 @@ class MoormanPerceptron(NFCNodeBase):
         return x / (self.k + x) if not self.is_first else x
 
     def _ode_step(self, x: jax.Array, z: jax.Array) -> jax.Array:
-        seq = self.gamma * jnp.prod(z)
-        dz = self.activation(self.phi(x)) - seq - self.beta * z
+        seq = jax.nn.softplus(self.gamma) * jnp.prod(z)
+        dz = self.activation(self.phi(x)) - seq - jax.nn.softplus(self.beta) * z
         return dz
 
     def _find_ss(self, x: jax.Array) -> jt.ScalarLike:
         u, v = self.activation(self.phi(x))
 
-        b = self.beta / self.gamma + (v - u) / self.beta
-        c = -u / self.gamma
+        beta_pos = jax.nn.softplus(self.beta)
+        gamma_pos = jax.nn.softplus(self.gamma)
+        b = beta_pos / gamma_pos + (v - u) / beta_pos
+        c = -u / gamma_pos
 
         z1 = 1 / 2 * (-b + jnp.sqrt(b**2 - 4 * c))
         return z1

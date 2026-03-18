@@ -3,6 +3,7 @@ from typing import List, Optional, Tuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 import jaxtyping as jt
 
 from .base import BioModel, SimulateConfig
@@ -117,7 +118,7 @@ class BioGNN(eqx.Module):
     growth: jax.Array
     nu: jax.Array
 
-    def __init__(self, graph, hill_coefficient):
+    def __init__(self, key, graph, hill_coefficient):
         # Go through the edges and init the message passing function
 
         n_nodes = max([max(a, b) for a, b, _ in graph]) + 1
@@ -155,9 +156,10 @@ class BioGNN(eqx.Module):
         self.aggregators = aggregators
         self.agg_indices = agg_indices
 
-        self.decay = jnp.ones(n_nodes)
-        self.growth = jnp.ones_like(self.decay)
-        self.nu = jnp.ones_like(self.decay)
+        k1, k2, k3 = jr.split(key)
+        self.decay = jr.uniform(k1, n_nodes)
+        self.growth = jr.uniform(k2, n_nodes)
+        self.nu = jr.uniform(k3, n_nodes)
 
     def _aggregator_sum(self, x: jax.Array) -> jax.Array:
         out = jnp.zeros_like(x)
