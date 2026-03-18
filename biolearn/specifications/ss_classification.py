@@ -49,7 +49,7 @@ class PhiXorFast(BaseSpec):
         y_pred = traj[:, 2]
         err = jnp.abs(y_true - y_pred)
         ro = self.spec.evaluate(err, self.semantics, t=0)
-        return jnp.asarray(ro).squeeze()
+        return ro.squeeze()
 
 
 class PhiXorSS(BaseSpec):

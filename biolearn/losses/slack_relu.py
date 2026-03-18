@@ -9,41 +9,9 @@ Loss per sample: relu(slack_i - robustness_i) - c * slack_i
 
 from typing import Callable
 
-import equinox as eqx
 import jax
-import jax.numpy as jnp
 
-from ..models import BioModel
 from .base import make_slack_loss
-
-
-class SlackModel(eqx.Module):
-    """Wraps a model with per-sample slack variables.
-
-    The slack array becomes a trainable parameter of the combined model,
-    so existing training loops optimise it alongside the original parameters.
-
-    Usage::
-
-        wrapped = SlackModel(my_biosyst, num_samples=len(x_train))
-        loss_fn = slack_relu_ic_loss(specification=spec, ts=ts)
-        # train wrapped as usual, then unwrap:
-        trained_model = trained_wrapped.model
-    """
-
-    model: BioModel
-    slack_raw: jax.Array
-
-    def __init__(self, model: BioModel):
-        self.model = model
-        self.slack_raw = jnp.asarray(0.1)
-
-    @property
-    def slack(self) -> jax.Array:
-        return jax.nn.relu(self.slack_raw)
-
-    def simulate(self, *args, **kwargs):
-        return self.model.simulate(*args, **kwargs)
 
 
 def slack_relu_ic_loss(

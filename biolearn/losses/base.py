@@ -15,7 +15,6 @@ import jax.random as jr
 from ..models import BioModel
 from ..models.base import SimulateConfig
 from ..utils import sample_hypercube_faces
-from .slack_relu import SlackModel
 
 _DEFAULT_SIM_CONFIG = SimulateConfig(
     to_ss=False, stiff=True, rtol=1e-6, atol=1e-6, progress_bar=False
@@ -214,3 +213,32 @@ def make_integral_loss(
             return weighting_fn(ros, system.slack)
 
     return _estimate_integral
+
+
+class SlackModel(eqx.Module):
+    """Wraps a model with per-sample slack variables.
+
+    The slack array becomes a trainable parameter of the combined model,
+    so existing training loops optimise it alongside the original parameters.
+
+    Usage::
+
+        wrapped = SlackModel(my_biosyst, num_samples=len(x_train))
+        loss_fn = slack_relu_ic_loss(specification=spec, ts=ts)
+        # train wrapped as usual, then unwrap:
+        trained_model = trained_wrapped.model
+    """
+
+    model: BioModel
+    slack_raw: jax.Array
+
+    def __init__(self, model: BioModel):
+        self.model = model
+        self.slack_raw = jnp.asarray(0.1)
+
+    @property
+    def slack(self) -> jax.Array:
+        return jax.nn.relu(self.slack_raw)
+
+    def simulate(self, *args, **kwargs):
+        return self.model.simulate(*args, **kwargs)
