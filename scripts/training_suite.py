@@ -270,14 +270,7 @@ def train(
         _loss, _grads = eqx.filter_value_and_grad(get_loss)(
             _diff_model, _static_model, _x_batch
         )
-        _updates, _new_optim_state = optimizer.update(
-            _grads,
-            _optim_state,
-            _diff_model,
-            value=_loss,
-            grad=_grads,
-            value_fn=lambda _x: get_loss(_x, _static_model, _x_batch),
-        )
+        _updates, _new_optim_state = optimizer.update(_grads, _optim_state, _diff_model)
         _new_model = eqx.apply_updates(_model, _updates)
         _delta = compute_difference(_model, _new_model)
         _grad_mag = compute_grad_mag(_grads)
@@ -296,13 +289,17 @@ def train(
     )
     specification_kwargs = {} if specification_kwargs is None else specification_kwargs
 
+    import time
+
     pbar = tqdm(range(epochs), total=epochs, disable=not verbose)
     for epoch_idx in pbar:
         (x_batch,) = next(data_iter)
         try:
+            s = time.time()
             loss, delta_mag, grad_mag, model, opt_state = batch_step(
                 model, x_batch, opt_state
             )
+            print(f"Took {time.time() - s}")
         except Exception:
             tqdm.write(f"Stopped due to error raised: {epochs} epochs")
             traceback.print_exc()

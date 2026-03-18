@@ -17,14 +17,17 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 2.0)
 
 import jax.numpy as jnp
 import optax
-from training_suite import train
+from training_suite import adam, train
 
 import wandb
-from biolearn.losses.activations import activations
-from biolearn.losses.base import BoxDomain, make_loss
-from biolearn.losses.slack_relu import SlackModel, slack_relu_ic_loss
-from biolearn.losses.slack_softmax import slack_softmax_loss
-from biolearn.losses.soft_relu import make_softrelu_loss
+from biolearn.losses import (
+    BoxDomain,
+    SlackModel,
+    activations,
+    make_loss,
+    make_softrelu_loss,
+    slack_relu_ic_loss,
+)
 from biolearn.specifications.common import BaseSpec
 from biolearn.tasks import Task
 from biolearn.utils import sample_hypercube_faces
@@ -211,6 +214,8 @@ def train_one(
     else:
         optimizer = optax.adabelief(learning_rate=lr_schedule)
 
+    optimizer = adam(cfg.lr)
+
     # Generate training data from task domain
     dataset_key, boundary_key, train_key = jax.random.split(train_key, 3)
     x_train = jax.random.uniform(
@@ -225,7 +230,11 @@ def train_one(
         n_faces = d * 2 ** (d - 1)
         n_per_face = max(1, n_boundary // n_faces)
         boundary_pts = sample_hypercube_faces(
-            boundary_key, task.domain_low, task.domain_hi, n_per_face=n_per_face, max_k=1
+            boundary_key,
+            task.domain_low,
+            task.domain_hi,
+            n_per_face=n_per_face,
+            max_k=1,
         )
         x_train = jnp.concatenate([x_train[: -boundary_pts.shape[0]], boundary_pts])
 

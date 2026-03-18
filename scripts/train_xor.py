@@ -6,8 +6,6 @@ from training_suite import run_suite
 from biolearn.specifications.ss_classification import PhiXorFast, PhiXorSS
 from biolearn.tasks.nfc_xor import NfcXor
 
-jax.config.update("jax_enable_x64", True)
-
 
 def _make_spec(cfg: TrainConfig):
     """Instantiate the STL specification from config."""
