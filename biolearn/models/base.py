@@ -17,7 +17,7 @@ class SimulateConfig:
     max_steps: int = int(1e6)
     rtol: float = 1e-10
     atol: float = 1e-10
-    max_stepsize: Optional[int] = None
+    max_stepsize: Optional[float] = None
     progress_bar: bool = True
     """Args for diffeqsolve"""
     args: Tuple = ()

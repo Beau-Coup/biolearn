@@ -468,7 +468,6 @@ class NFC(BioModel):
         interp = diffrax.LinearInterpolation(ts, x)
         return interp
 
-    @eqx.filter_jit
     def diffrax_step(self, t, y, args):
         x = args[0].evaluate(t)
         out = self.ode_step(x, y)
