@@ -24,6 +24,41 @@ from biolearn.models.nfc import NFC
 from biolearn.specifications import PhiXorFast
 
 
+class SamplingBuffer:
+    buffer: jax.Array
+
+    def __init__(self, dimension: int, capacity: int = 512):
+        self.buffer = jnp.empty((capacity, dimension))
+        self.size = 0
+        self.capacity = capacity
+        self.add_to = 0
+
+    def insert(self, x: jax.Array):
+        """Add samples
+        x: (B, n)
+        """
+        if x.ndim == 1:
+            x = x.reshape((1, -1))
+
+        len = x.shape[0]
+        if self.add_to + len > self.capacity:
+            limit = self.capacity - self.add_to
+
+            self.buffer = self.buffer.at[self.add_to : self.capacity].set(x[:limit])
+
+            len = len - limit
+            self.add_to = 0
+            x = x[limit:]
+
+        self.buffer = self.buffer.at[self.add_to : self.add_to + len].set(x)
+        self.add_to = (self.add_to + len) % self.capacity
+        self.size = max(self.add_to, self.capacity)
+
+    def sample(self, key: jax.Array, n_samples: int) -> jax.Array:
+        indices = jr.choice(key, self.size, (n_samples,))
+        return self.buffer[indices]
+
+
 class MLP(eqx.Module):
     layers: list
 
@@ -129,7 +164,7 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
 
     ts = jnp.arange(0.0, 20.0, 1.0)
 
-    schedule = optax.exponential_decay(lr, 400, 0.5)
+    schedule = optax.exponential_decay(lr, 500, 0.6, staircase=True)
     optimizer = optax.chain(
         optax.clip_by_global_norm(1.0),
         optax.adabelief(schedule),
@@ -153,6 +188,8 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
         # n = jnp.array(x0.shape[0], dtype=jnp.float32)
         task_loss = jax.nn.relu(-rhos).mean()
         return task_loss + reg_weight * residual_l2(model)
+
+    importance_buffer = SamplingBuffer(2, capacity=1024)
 
     # TODO: Change the dataset
     xs = jnp.linspace(0, 1.0, 32)
@@ -187,11 +224,22 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
             key, subkey = jr.split(key)
             xs = jnp.concatenate([x0, x1, x2, x3, jr.uniform(subkey, (n_inside, 2))])
 
+            # Append importance samples
+            if importance_buffer.size > 32:
+                key, subkey = jr.split(key)
+                samples = importance_buffer.sample(subkey, 32)
+
+                xs = jnp.concatenate([xs, samples], axis=0)
+
             # TODO: batch
             loss, grads = grad_loss(model, xs, ts)
             updates, opt_state = optimizer.update(grads, opt_state)
             tqdm.set_description(pbar, f"{loss:.2e}")
             model = eqx.apply_updates(model, updates)
+
+            failed = jnp.argwhere(loss > 0)
+            if failed.shape[1] > 0:
+                importance_buffer.insert(jax.lax.stop_gradient(xs[failed]))
             all_losses.append(float(loss))
 
     plt.plot(np.arange(len(all_losses)), all_losses)
@@ -200,7 +248,7 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
     kd = jr.key_data(key)
     plt.savefig(f"losses-{kd[0]}{kd[1]}.png")
 
-    sim = partial(model.simulate, ts=ts, config=sim_cfg)
+    sim = partial(model.nominal_model.simulate, ts=ts, config=sim_cfg)
     y_traces, _ = jax.vmap(sim)(x_test)
     traj = ss_to_traj(x_test, y_traces)
     rhos = jax.vmap(spec.evaluate)(traj)
@@ -213,7 +261,7 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
 
 def main():
     n_epochs = 1000
-    lr = 1e-2
+    lr = 5e-2
     n_runs = 3
     reg = 1e-1
 
