@@ -1,4 +1,4 @@
-"""Write a training script from scratch to easily tune things to have a story for the paper and then bring it all back."""
+"""Write a t raining script from scratch to easily tune things to have a story for the paper and then bring it all back."""
 
 import math
 from functools import partial
@@ -86,11 +86,13 @@ class BufferModel(eqx.Module):
 
     nominal_model: BioModel
     residual_model: MLP
+    slack: jax.Array
 
     def __init__(self, key: jax.Array, nominal: BioModel):
         self.nominal_model = nominal
         state_size = math.prod(nominal.shape)
         self.residual_model = MLP(key, state_size=state_size, hidden_size=64)
+        self.slack = jnp.array(0.01)
 
     def _step(self, t, y, args):
         mlp_out = self.residual_model(y.flatten()).reshape(y.shape)
@@ -164,10 +166,22 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
 
     ts = jnp.arange(0.0, 20.0, 1.0)
 
-    schedule = optax.exponential_decay(lr, 500, 0.6, staircase=True)
+    fast_schedule = optax.exponential_decay(lr, 500, 0.6, staircase=True)
+    slow_schedule = optax.exponential_decay(lr * 0.05, 500, 0.6, staircase=True)
+
+    params, static = eqx.partition(model, eqx.is_array)
+    labels = jax.tree_util.tree_map(lambda _: "standard", params)
+    labels = eqx.tree_at(lambda p: p.slack, labels, "slow")
+
     optimizer = optax.chain(
         optax.clip_by_global_norm(1.0),
-        optax.adabelief(schedule),
+        optax.multi_transform(
+            {
+                "standard": optax.adabelief(fast_schedule),
+                "slow": optax.adabelief(slow_schedule),
+            },
+            labels,
+        ),
     )
 
     def ss_to_traj(x, y_trace):
@@ -175,6 +189,15 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
         x_traj = jnp.ones_like(y_traj) * x[..., None, :]  # (B, T, 2)
 
         return jnp.concatenate([x_traj, y_traj], axis=-1)
+
+    relu_loss = lambda rhos: jax.nn.relu(-rhos).mean()
+    soft_relu_loss = lambda rhos: (
+        jax.nn.relu(-rhos) + 1e-2 * jax.nn.sigmoid(jax.nn.relu(rhos))
+    ).mean()
+    slack_relu_loss = lambda rhos, epsilon: (
+        jax.nn.relu(epsilon - rhos) - 0.5 * epsilon
+    ).mean()
+    leaky_relu_loss = lambda rhos: jax.nn.leaky_relu(-rhos).mean()
 
     @eqx.filter_value_and_grad
     def grad_loss(model, x0, ts):
@@ -186,8 +209,21 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
         safe_traj = ss_to_traj(x0, y_traces)
         rhos = jax.vmap(spec.evaluate)(safe_traj)
         # n = jnp.array(x0.shape[0], dtype=jnp.float32)
-        task_loss = jax.nn.relu(-rhos).mean()
+        task_loss = leaky_relu_loss(rhos)
+
         return task_loss + reg_weight * residual_l2(model)
+
+    @eqx.filter_jit
+    def evaluate(model, x0, ts):
+        "Evaluate the model"
+        sim = partial(model.simulate, ts=ts, config=sim_cfg)
+        y_traces, _ = jax.vmap(sim)(x0)
+        safe_traj = ss_to_traj(x0, y_traces)
+        rhos = jax.vmap(spec.evaluate)(safe_traj)
+        min_rob = rhos.min()
+        max_rob = rhos.max()
+        sat_frac = (jax.nn.relu(rhos) > 0).mean()
+        return min_rob, max_rob, sat_frac
 
     importance_buffer = SamplingBuffer(2, capacity=1024)
 
@@ -202,8 +238,9 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
         f"Number of epochs ({n_epochs}) can't be split into len(t_horizons)={len(t_horizons)} chunks evenly."
     )
 
-    all_losses = []
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+
+    all_losses = []
     n_points = 256
     n_boundary = n_points // 4
     n_inside = n_points - n_boundary
@@ -258,12 +295,18 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
 
     print(f"Satisfied {sats}/{x_test.shape[0]} of initial conditions")
 
+    weight_filter = list(
+        filter(eqx.is_inexact_array, jax.tree_util.tree_leaves(model.nominal_model))
+    )
+
+    print(f"Raw model parameters: {[jnp.exp(w) for w in weight_filter]}")
+
 
 def main():
-    n_epochs = 1000
-    lr = 5e-2
+    n_epochs = 2000
+    lr = 1e-2
     n_runs = 3
-    reg = 1e-1
+    reg = 0.1
 
     key = jr.key(42)
 
