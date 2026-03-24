@@ -105,7 +105,12 @@ class BufferModel(eqx.Module):
         x_ts=None,
         config: SimulateConfig = SimulateConfig(),
     ):
-        interp = NFC._handle_inputs(x, x_ts)
+        if isinstance(self.nominal_model, NFC):
+            interp = NFC._handle_inputs(x, x_ts)
+            args = (interp,)
+        else:
+            args = None
+
         y0 = jnp.zeros(self.nominal_model.shape)
 
         solver = diffrax.Kvaerno5() if config.stiff else diffrax.Tsit5()
@@ -132,7 +137,7 @@ class BufferModel(eqx.Module):
             stepsize_controller=stepsize_controller,
             max_steps=config.max_steps,
             throw=config.throw,
-            args=(interp,),
+            args=args,
         )
         return solution.ys, solution
 

@@ -32,14 +32,6 @@ class Quadrotor(eqx.Module):
         self.kp = jr.uniform(kp, minval=0.1, maxval=15.0)
         self.kd = jr.uniform(kd, minval=0.1, maxval=5.0)
 
-        # DEBUG
-        # self.log_body_mass = jnp.array(0.0)
-        # self.log_rotor_mass = jnp.log(0.4)
-        # self.log_length = jnp.log(0.5)
-        # self.log_radius = jnp.log(0.1)
-        # self.kp = jnp.array(10.0)
-        # self.kd = jnp.array(3.0)
-
         self.g = 9.81
         self.h_ref = 1.0
 
