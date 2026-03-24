@@ -16,7 +16,7 @@ from biolearn.models.base import SimulateConfig
 n_inputs = 2
 layer_sizes = [2, 1]
 k = 0.8
-gamma = 1000.0
+gamma = 1.0
 beta = 1.0
 seed = 42
 t_final = 20.0
@@ -37,6 +37,17 @@ learned_params = [
     jnp.array([[[3.0723347, 2.78159661], [0.0630462, 0.10228087]]]),
     jnp.array([[0.00362009, 0.00290267]]),
 ]
+learned_params = [
+    jnp.array(
+        [
+            [[-0.12975249, -1.7293505], [-2.30332539, -0.00443371]],
+            [[-1.79611308, 0.0320154], [0.1308584, -2.18242306]],
+        ],
+    ),
+    jnp.array([[-8.56191155, -1.96361392], [-6.97326538, -1.77710028]]),
+    jnp.array([[[1.12243776, 1.02302508], [-2.76388751, -2.28003262]]]),
+    jnp.array([[-5.62125547, -5.84212267]]),
+]
 # ────────────────────────────────────────────────────────────────────
 
 key = jr.key(seed)
@@ -44,7 +55,8 @@ model = MoormanNFC(n_inputs, layer_sizes, gamma=gamma, beta=beta, k=k, key=key)
 
 if learned_params is not None:
     # Back to log space
-    log_params = [jnp.log(p) for p in learned_params]
+    # log_params = [jnp.log(p) for p in learned_params]
+    log_params = learned_params
     leaves, treedef = jax.tree_util.tree_flatten(model)
     is_leaf = [eqx.is_inexact_array(l) for l in leaves]
     param_idx = 0

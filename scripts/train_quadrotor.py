@@ -9,6 +9,9 @@ import numpy as np
 import optax
 from tqdm import tqdm
 
+from biolearn.models.quadrotor import QuadModel, Quadrotor
+from biolearn.specifications.quadrotor import HeightMaintain
+
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 2.0)
@@ -18,10 +21,8 @@ import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
 
-from biolearn.models import MoormanNFC
 from biolearn.models.base import BioModel, SimulateConfig
-from biolearn.models.nfc import NFC
-from biolearn.specifications import PhiXorFast
+from biolearn.utils import sample_hypercube_faces
 
 
 class SamplingBuffer:
@@ -65,7 +66,6 @@ class MLP(eqx.Module):
     def __init__(self, key: jax.Array, state_size: int, hidden_size: int = 32):
         k1, k2, k3 = jr.split(key, 3)
         out_layer = eqx.nn.Linear(hidden_size, state_size, key=k3)
-        out_layer = eqx.tree_at(lambda l: l.weight, out_layer, out_layer.weight * 0.01)
         self.layers = [
             eqx.nn.Linear(state_size, hidden_size, key=k1),
             jax.nn.relu,
@@ -91,12 +91,16 @@ class BufferModel(eqx.Module):
     def __init__(self, key: jax.Array, nominal: BioModel):
         self.nominal_model = nominal
         state_size = math.prod(nominal.shape)
-        self.residual_model = MLP(key, state_size=state_size, hidden_size=64)
+        residual_model = MLP(key, state_size=state_size, hidden_size=64)
+        self.residual_model = jax.tree_util.tree_map(
+            lambda x: jnp.zeros_like(x) if eqx.is_inexact_array(x) else x,
+            residual_model,
+        )
         self.slack = jnp.array(0.01)
 
     def _step(self, t, y, args):
         mlp_out = self.residual_model(y.flatten()).reshape(y.shape)
-        return self.nominal_model.diffrax_step(t, y, args) + mlp_out * y
+        return self.nominal_model.diffrax_step(t, y, args) + mlp_out
 
     def simulate(
         self,
@@ -105,11 +109,9 @@ class BufferModel(eqx.Module):
         x_ts=None,
         config: SimulateConfig = SimulateConfig(),
     ):
-        interp = NFC._handle_inputs(x, x_ts)
-        y0 = jnp.zeros(self.nominal_model.shape)
+        y0 = x
 
         solver = diffrax.Kvaerno5() if config.stiff else diffrax.Tsit5()
-        # solver = diffrax.Tsit5()
 
         stepsize_controller = diffrax.PIDController(
             pcoeff=0.3 if config.stiff else 0.0,
@@ -126,13 +128,12 @@ class BufferModel(eqx.Module):
             solver,
             t0=ts[0],
             t1=ts[-1],
-            dt0=0.001,
+            dt0=0.01,
             y0=y0,
             saveat=diffrax.SaveAt(ts=ts),
             stepsize_controller=stepsize_controller,
             max_steps=config.max_steps,
             throw=config.throw,
-            args=(interp,),
         )
         return solution.ys, solution
 
@@ -146,25 +147,26 @@ def residual_l2(model: BufferModel) -> jax.Array:
 
 def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
     key, subkey = jr.split(key)
-    nominal_model = MoormanNFC(2, [2, 1], gamma=1.0, k=0.8, key=subkey)
+    quadrotor = Quadrotor(subkey)
+    nominal_model = QuadModel(quadrotor)
     key, subkey = jr.split(key)
 
     model = BufferModel(subkey, nominal_model)
 
-    spec = PhiXorFast()
+    spec = HeightMaintain()
 
     sim_cfg = SimulateConfig(
         to_ss=False,
-        stiff=True,
+        stiff=False,
         throw=True,
-        max_steps=int(2e3),
+        max_steps=int(3e4),
         rtol=1e-3,
         atol=1e-4,
         max_stepsize=0.5,
         progress_bar=False,
     )
 
-    ts = jnp.arange(0.0, 20.0, 1.0)
+    ts = jnp.arange(0.0, 5.0, 1.0)
 
     fast_schedule = optax.exponential_decay(lr, 500, 0.6, staircase=True)
     slow_schedule = optax.exponential_decay(lr * 0.05, 500, 0.6, staircase=True)
@@ -184,11 +186,9 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
         ),
     )
 
-    def ss_to_traj(x, y_trace):
-        y_traj = y_trace[..., -1, 0][..., None]  # (B, T, 1)
-        x_traj = jnp.ones_like(y_traj) * x[..., None, :]  # (B, T, 2)
-
-        return jnp.concatenate([x_traj, y_traj], axis=-1)
+    def ss_to_traj(y_trace):
+        y_traj = y_trace[..., 4]  # (B, T, 1)
+        return y_traj
 
     relu_loss = lambda rhos: jax.nn.relu(1e-6 - rhos).mean()
     soft_relu_loss = lambda rhos: (
@@ -200,37 +200,25 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
     leaky_relu_loss = lambda rhos: jax.nn.leaky_relu(-rhos).mean()
 
     @eqx.filter_value_and_grad(has_aux=True)
-    def grad_loss(model, x0, ts):
+    def grad_loss(model, x0, ts, reg=reg_weight):
         sim = partial(model.simulate, ts=ts, config=sim_cfg)
         y_traces, _ = jax.vmap(sim)(x0)
-        safe_traj = ss_to_traj(x0, y_traces)
-
+        safe_traj = ss_to_traj(y_traces)
         rhos = jax.vmap(spec.evaluate)(safe_traj)
-
         task_loss = relu_loss(rhos)
+        return task_loss + reg * residual_l2(model), rhos
 
-        return task_loss + reg_weight * residual_l2(model), rhos
-
-    @eqx.filter_jit
-    def evaluate(model, x0, ts):
-        "Evaluate the model"
-        sim = partial(model.simulate, ts=ts, config=sim_cfg)
-        y_traces, _ = jax.vmap(sim)(x0)
-        safe_traj = ss_to_traj(x0, y_traces)
-        rhos = jax.vmap(spec.evaluate)(safe_traj)
-        min_rob = rhos.min()
-        max_rob = rhos.max()
-        sat_frac = (jax.nn.relu(rhos) > 0).mean()
-        return min_rob, max_rob, sat_frac
-
-    importance_buffer = SamplingBuffer(2, capacity=1024)
+    importance_buffer = SamplingBuffer(12, capacity=1024)
 
     # TODO: Change the dataset
-    xs = jnp.linspace(0, 1.0, 32)
-    xs, ys = jnp.meshgrid(*[xs, xs])
-    x_test = jnp.stack([xs.flatten(), ys.flatten()], axis=-1)
+    xs = jnp.linspace(-0.4, 0.4, 10)
+    xs = jnp.meshgrid(*[xs, xs, xs, xs, xs, xs])
+    x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
+    x_test = jnp.concatenate(
+        [x_test, jnp.zeros_like(x_test)], axis=-1
+    )  # Add zero for angular ICs
 
-    t_horizons = [20.0]
+    t_horizons = [5.0]
 
     assert n_epochs % len(t_horizons) == 0, (
         f"Number of epochs ({n_epochs}) can't be split into len(t_horizons)={len(t_horizons)} chunks evenly."
@@ -242,6 +230,8 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
     n_points = 256
     n_boundary = n_points // 4
     n_inside = n_points - n_boundary
+    reg_gamma = reg_weight ** (1 / n_epochs)
+
     for t_final in tqdm(t_horizons, desc="Horizons"):
         ts = jnp.arange(0.0, t_final, 1.0)
 
@@ -249,31 +239,36 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
         for i in pbar:
             # Sample points
             key, subkey = jr.split(key)
-            edge_points = jr.uniform(subkey, (n_boundary,))
-            step = n_boundary // 4
-            x0 = jnp.stack([jnp.zeros(step), edge_points[:step]], axis=-1)
-            x1 = jnp.stack([jnp.ones(step), edge_points[step : 2 * step]], axis=-1)
-            x2 = jnp.stack([edge_points[2 * step : 3 * step], jnp.zeros(step)], axis=-1)
-            x3 = jnp.stack([edge_points[3 * step :], jnp.ones(step)], axis=-1)
+            edge_samples = sample_hypercube_faces(
+                subkey, jnp.ones(6) * -0.4, 0.4 * jnp.ones(6), n_per_face=1
+            )
 
             key, subkey = jr.split(key)
-            xs = jnp.concatenate([x0, x1, x2, x3, jr.uniform(subkey, (n_inside, 2))])
+            xs = jnp.concatenate(
+                [
+                    edge_samples,
+                    jr.uniform(subkey, (n_inside, 6), minval=-0.4, maxval=0.4),
+                ]
+            )
+            xs = jnp.concatenate([xs, jnp.zeros_like(xs)], axis=1)
 
             # Append importance samples
-            if importance_buffer.size > 32:
-                key, subkey = jr.split(key)
-                samples = importance_buffer.sample(subkey, 32)
-                xs = jnp.concatenate([xs, samples], axis=0)
+            # if importance_buffer.size > 32:
+            #     key, subkey = jr.split(key)
+            #     samples = importance_buffer.sample(subkey, 32)
+            #     xs = jnp.concatenate([xs, samples], axis=0)
 
-            (loss, rhos), grads = grad_loss(model, xs, ts)
+            (loss, rhos), grads = grad_loss(
+                model, xs, ts, reg=0.05 * (reg_gamma ** (n_epochs - i))
+            )
 
             updates, opt_state = optimizer.update(grads, opt_state)
             tqdm.set_description(pbar, f"{loss:.2e}")
             model = eqx.apply_updates(model, updates)
 
-            failed = jnp.nonzero(rhos < 0)
-            if failed[0].shape[0] > 0:
-                importance_buffer.insert(jax.lax.stop_gradient(xs[failed]))
+            # failed = jnp.nonzero(rhos < 0)
+            # if failed[0].shape[0] > 0:
+            #     importance_buffer.insert(jax.lax.stop_gradient(xs[failed]))
             all_losses.append(float(loss))
 
     plt.plot(np.arange(len(all_losses)), all_losses)
@@ -284,7 +279,7 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
 
     sim = partial(model.nominal_model.simulate, ts=ts, config=sim_cfg)
     y_traces, _ = jax.vmap(sim)(x_test)
-    traj = ss_to_traj(x_test, y_traces)
+    traj = ss_to_traj(y_traces)
     rhos = jax.vmap(spec.evaluate)(traj)
 
     sats = jnp.sum(rhos > 0).astype(int)
@@ -300,10 +295,10 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
 
 
 def main():
-    n_epochs = 1200
-    lr = 5e-2
+    n_epochs = 500
+    lr = 0.01
     n_runs = 3
-    reg = 0.1
+    reg = 1e-5
 
     key = jr.key(42)
 
