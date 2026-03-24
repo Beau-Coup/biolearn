@@ -179,7 +179,7 @@ def quadrotor_sampler(
     return xs
 
 
-def xor_sampler(key: jax.Array, n_samples: int, n_face: int = 1) -> jax.Array:
+def xor_sampler(key: jax.Array, n_samples: int, n_face: int = 2) -> jax.Array:
     key, subkey = jr.split(key)
     edge_points = jr.uniform(subkey, (n_face,))
     step = n_face // 4
@@ -215,10 +215,11 @@ def run_one(key: jax.Array, args: Args):
 
             ts = jnp.arange(0.0, 5.0, 1.0)
 
-            def ss_to_traj(y_trace):
+            def ss_to_traj_q(y_trace, _):
                 y_traj = y_trace[..., 4]  # (B, T, 1)
                 return y_traj
 
+            ss_to_traj = ss_to_traj_q
             xs = jnp.linspace(-0.4, 0.4, 10)
             xs = jnp.meshgrid(*[xs, xs, xs, xs, xs, xs])
             x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
@@ -246,9 +247,13 @@ def run_one(key: jax.Array, args: Args):
 
             ts = jnp.arange(0.0, 20.0, 1.0)
 
-            def ss_to_traj(y_trace):
-                y_traj = y_trace[..., -1, 0]  # (B, T, 1)
-                return y_traj
+            def ss_to_traj_xor(y_trace, x):
+                y_traj = y_trace[..., -1, 0][..., None]  # (B, T, 1)
+                x_traj = jnp.ones_like(y_traj) * x[..., None, :]  # (B, T, 2)
+
+                return jnp.concatenate([x_traj, y_traj], axis=-1)
+
+            ss_to_traj = ss_to_traj_xor
 
             xs = jnp.linspace(0.0, 1.0, 32)
             xs = jnp.meshgrid(*[xs, xs])
@@ -302,7 +307,7 @@ def run_one(key: jax.Array, args: Args):
     def grad_loss(model, x0, ts, reg=args.regularizer):
         sim = partial(model.simulate, ts=ts, config=sim_cfg)
         y_traces, _ = jax.vmap(sim)(x0)
-        safe_traj = ss_to_traj(y_traces)
+        safe_traj = ss_to_traj(y_traces, x0)
         rhos = jax.vmap(spec.evaluate)(safe_traj)
         task_loss = group_loss(rhos, model.slack)
         return task_loss + reg * residual_l2(model), rhos
@@ -358,7 +363,7 @@ def run_one(key: jax.Array, args: Args):
 
     sim = partial(model.nominal_model.simulate, ts=ts, config=sim_cfg)
     y_traces, _ = jax.vmap(sim)(x_test)
-    traj = ss_to_traj(y_traces)
+    traj = ss_to_traj(y_traces, x_test)
     rhos = jax.vmap(spec.evaluate)(traj)
 
     sats = jnp.sum(rhos > 0).astype(int)
