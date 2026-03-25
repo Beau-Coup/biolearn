@@ -114,9 +114,9 @@ class BioGNN(eqx.Module):
     n_nodes: int
 
     aggregators: List[eqx.Module]
-    decay: jax.Array
-    growth: jax.Array
-    nu: jax.Array
+    log_decay: jax.Array
+    log_growth: jax.Array
+    log_nu: jax.Array
 
     def __init__(self, key, graph, hill_coefficient):
         # Go through the edges and init the message passing function
@@ -156,10 +156,10 @@ class BioGNN(eqx.Module):
         self.aggregators = aggregators
         self.agg_indices = agg_indices
 
-        k1, k2, k3 = jr.split(key)
-        self.decay = jr.uniform(k1, n_nodes)
-        self.growth = jr.uniform(k2, n_nodes)
-        self.nu = jr.uniform(k3, n_nodes)
+        k1, k2, k3 = jr.split(key, 3)
+        self.log_decay = jr.uniform(k1, n_nodes)
+        self.log_growth = jr.uniform(k2, n_nodes)
+        self.log_nu = jr.uniform(k3, n_nodes)
 
     def _aggregator_sum(self, x: jax.Array) -> jax.Array:
         out = jnp.zeros_like(x)
@@ -174,11 +174,23 @@ class BioGNN(eqx.Module):
         dx_agg = self._aggregator_sum(x)
         dx = dx + dx_agg
 
-        return self.nu * dx - self.decay * x + self.growth
+        return (
+            jnp.exp(self.log_nu) * dx
+            - jnp.exp(self.log_decay) * x
+            + jnp.exp(self.log_growth)
+        )
+
+    @property
+    def shape(self):
+        return (self.n_nodes,)
 
 
 class BioGnnModel(BioModel):
     model: BioGNN
+
+    @property
+    def shape(self):
+        return self.model.shape
 
     def diffrax_step(self, t: jt.ScalarLike, y: jax.Array, args: Tuple) -> jax.Array:
         return self.model(y)
@@ -210,7 +222,8 @@ if __name__ == "__main__":
         (2, 1, EdgeType.Inhibition),
     ]
 
-    net = BioGNN(graph, 2.0)
+    key = jr.key(0)
+    net = BioGNN(key, graph, 2.0)
 
     jitted = eqx.filter_jit(net)
     print(jitted(jnp.zeros(3)))

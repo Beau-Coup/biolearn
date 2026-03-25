@@ -12,7 +12,7 @@ from . import Task
 
 
 class HK25(Task):
-    def __init__(self):
+    def __init__(self, key: jax.Array):
         self.domain_hi = jnp.ones(6)
         self.domain_low = jnp.zeros_like(self.domain_hi)
         self.ts = jnp.arange(0, 25, 1.0)
@@ -22,6 +22,7 @@ class HK25(Task):
 
         # The model to use
         gnn = BioGNN(
+            key,
             [
                 (0, 1, EdgeType.Activation),  # x1 -> x2
                 (2, 3, EdgeType.Inhibition),  # x3 -| x4

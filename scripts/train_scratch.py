@@ -12,6 +12,8 @@ import optax
 import tyro
 from tqdm import tqdm
 
+from biolearn import BioGNN, BioGnnModel, FastProduce
+from biolearn.models.hill import EdgeType
 from biolearn.models.nfc import NFC, MoormanNFC
 from biolearn.models.quadrotor import QuadModel, Quadrotor
 from biolearn.specifications.quadrotor import HeightMaintain
@@ -105,7 +107,7 @@ class BufferModel(eqx.Module):
 
     def _step(self, t, y, args):
         mlp_out = self.residual_model(y.flatten()).reshape(y.shape)
-        return self.nominal_model.diffrax_step(t, y, args) + mlp_out
+        return self.nominal_model.diffrax_step(t, y, args) + mlp_out * y
 
     def simulate(
         self,
@@ -192,6 +194,29 @@ def xor_sampler(key: jax.Array, n_samples: int, n_face: int = 2) -> jax.Array:
     return xs
 
 
+def hill_sampler(
+    key: jax.Array,
+    n_samples: int,
+    n_per_face: int = 1,
+) -> jax.Array:
+
+    low = jnp.array([0.1, 0.1, 0.1, 0.1, 0.9, 0.9])
+    high = jnp.array([0.4, 0.4, 0.4, 0.4, 1.0, 1.0])
+
+    key, subkey = jr.split(key)
+    edge_samples = sample_hypercube_faces(
+        subkey,
+        low,
+        high,
+        n_per_face=n_per_face,
+    )
+
+    inside_samples = jr.uniform(key, (n_samples, 6)) * (high - low) + (high + low) / 2.0
+    xs = jnp.concatenate([edge_samples, inside_samples])
+
+    return xs
+
+
 def run_one(key: jax.Array, args: Args):
     key, subkey = jr.split(key)
 
@@ -261,6 +286,48 @@ def run_one(key: jax.Array, args: Args):
 
             t_horizons = [20.0]
             sampler = xor_sampler
+        case "hill":
+            graph = [
+                (0, 1, EdgeType.Activation),  # x1 -> x2
+                (2, 3, EdgeType.Inhibition),  # x3 -| x4
+                (3, 0, EdgeType.Inhibition),  # x4 -| x1
+                (3, 1, EdgeType.Activation),  # x4 -> x2
+                (4, 1, EdgeType.Activation),  # x5 -> x2
+                (4, 2, EdgeType.Activation),  # x5 -> x3
+                (4, 5, EdgeType.Activation),  # x5 -> x6
+            ]
+            key, subkey = jr.split(key, 2)
+            nominal_model = BioGNN(subkey, graph, 2.0)
+            spec = FastProduce()
+            nominal_model = BioGnnModel(nominal_model)
+
+            sim_cfg = SimulateConfig(
+                to_ss=False,
+                stiff=True,
+                throw=True,
+                max_steps=int(2e4),
+                rtol=1e-3,
+                atol=1e-4,
+                max_stepsize=0.5,
+                progress_bar=False,
+            )
+
+            importance_buffer = SamplingBuffer(6, capacity=1024)
+
+            ts = jnp.arange(0.0, 15.0, 1.0)
+
+            def ss_to_traj_hill(y_trace, x):
+                return y_trace
+
+            ss_to_traj = ss_to_traj_hill
+
+            xs = jnp.linspace(0.1, 0.4, 10)
+            ys = jnp.linspace(0.9, 1.0, 10)
+            xs = jnp.meshgrid(*[xs, xs, xs, xs, ys, ys])
+            x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
+
+            t_horizons = [15.0]
+            sampler = hill_sampler
 
     key, subkey = jr.split(key)
     model = BufferModel(subkey, nominal_model)
@@ -296,7 +363,7 @@ def run_one(key: jax.Array, args: Args):
             ).mean()
         case "slackrelu":
             group_loss = lambda rhos, epsilon: (
-                jax.nn.relu(epsilon - rhos) - 0.5 * epsilon
+                jax.nn.relu(epsilon - rhos) - 0.1 * epsilon
             ).mean()
         case "leakyrelu":
             group_loss = lambda rhos, _: jax.nn.leaky_relu(-rhos).mean()
@@ -322,7 +389,7 @@ def run_one(key: jax.Array, args: Args):
     n_points = args.n_samples
     n_boundary = args.boundary_samples
     n_inside = max(n_points - n_boundary, 16)
-    reg_gamma = args.regularizer ** (1 / args.num_epochs)
+    reg_gamma = (args.regularizer / args.final_reg) ** (1 / args.num_epochs)
 
     for t_final in tqdm(t_horizons, desc="Horizons"):
         ts = jnp.arange(0.0, t_final, 1.0)
@@ -341,7 +408,7 @@ def run_one(key: jax.Array, args: Args):
                 xs = jnp.concatenate([xs, samples], axis=0)
 
             (loss, rhos), grads = grad_loss(
-                model, xs, ts, reg=0.05 * (reg_gamma ** (args.num_epochs - i))
+                model, xs, ts, reg=args.final_reg * (reg_gamma ** (args.num_epochs - i))
             )
 
             updates, opt_state = optimizer.update(grads, opt_state)
@@ -388,10 +455,12 @@ class Args:
     """Learning rate decay interval."""
     runs: int = 3
     """Number of seeds to try out."""
-    system: Literal["nfc", "quadrotor"] = "quadrotor"
+    system: Literal["nfc", "quadrotor", "hill"] = "quadrotor"
     """The system to test."""
     regularizer: float = 1e-5
-    """The starting regularization on the l2 norm of the MLP. Grows to 0.1 exponentially."""
+    """The starting regularization on the l2 norm of the MLP. Interpolated exponentially."""
+    final_reg: float = 1e-1
+    """The final regularization on the l2 norm of the MLP."""
     loss: Literal["relu", "softrelu", "leakyrelu", "slackrelu", "exponential"] = "relu"
     """The loss function to use to weight different initial conditions."""
     importance_sample: bool = False
