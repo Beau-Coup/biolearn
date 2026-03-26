@@ -33,7 +33,7 @@ options.taylorTerms = 4;
 % System Dynamics ---------------------------------------------------------
 
 % system with uncertain parameters
-BioNN = nonlinearSys(@BioTransmission);
+Hill = nonlinearSys(@BioTransmission);
 
 %%%%%%%%%%% TESTING
 simOpt.points = 1;
@@ -41,10 +41,10 @@ simOpt.points = 1;
 params.R0 = zonotope([0.25; 0.25; 0.25; 0.2; 0.95; 0.95], diag([0.15*ones(4,1);0.05*ones(2,1)])); 
 params.tFinal = 40;   
 
-% NOW call the solver
-%[t_out, y_out] = ode15s(@BNN, ts, y0, u0, options);
-% random simulation
-traj = simulateRandom(BioNN,params,simOpt);
+
+% testing initial conditions to ensure currect code translation
+%params.R0 = zonotope([0.2; 0.2; 0.1; 0.1; 0.9; 0.9]);
+traj = simulateRandom(Hill,params,simOpt);
 
 figure;
 hold on;
@@ -74,7 +74,7 @@ grid on;
 % compute reachable set with uncertain parameters
 options.intermediateTerms = 4;
 timerVal = tic;
-RcontParam = reach(BioNN, params, options);
+RcontParam = reach(Hill, params, options);
 tComp = toc(timerVal);
 disp(['computation time of reachable set with uncertain parameters: ',num2str(tComp)]);
 

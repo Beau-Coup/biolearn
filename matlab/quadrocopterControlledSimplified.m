@@ -38,7 +38,9 @@ J_z = 2*M*R^2/5 + 4*l^2*M_rotor;
 
 % height control (PD)
 F_temp = m*g - P*(x(3) - u_1) - D*x(9);
-F = clip(F_temp, 0.5 * m * g, 1.5 * m * g);
+%F = clip(F_temp, 0.5 * m * g, 1.5 * m * g);
+amplitude = 0.5 * m*g;
+F = m*g + amplitude * tanh((F_temp - m*g) / amplitude);
 
 % desired 
 
