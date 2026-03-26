@@ -83,11 +83,21 @@ class InhibitActivateAggregator(eqx.Module):
         self.activate_indices = [edge.start for edge in activations]
 
     def _denominator_fun(self, x: jax.Array) -> jax.Array:
-        return 1.0 + jnp.sum(
-            self.k_inhibit
-            * (
-                x[jnp.array(self.inhibit_indices, dtype=jnp.int32)]
-                ** jnp.array(self.hill_inhibit)
+        return (
+            1.0
+            + jnp.sum(
+                self.k_inhibit
+                * (
+                    x[jnp.array(self.inhibit_indices, dtype=jnp.int32)]
+                    ** jnp.array(self.hill_inhibit)
+                )
+            )
+            + jnp.sum(
+                self.k_activate
+                * (
+                    x[jnp.array(self.activate_indices, dtype=jnp.int32)]
+                    ** jnp.array(self.hill_activate)
+                )
             )
         )
 

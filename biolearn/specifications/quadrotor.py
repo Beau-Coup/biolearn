@@ -19,7 +19,7 @@ class HeightMaintain(BaseSpec):
         max_height = Predicate("h<1.4", fn=lambda sig, t: 1.4 - sig[t]).always()
 
         min_height = Predicate("h>0.9", fn=lambda sig, t: sig[t] - 0.9).always(
-            Interval(1, 5)
+            Interval(1)
         )
 
         full = min_height & max_height

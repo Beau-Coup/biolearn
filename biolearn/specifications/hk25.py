@@ -3,7 +3,7 @@ Implementation of STL specification from Krasowski et al. 2025.
 Learning Biomolecular Models using Signal Temporal Logic
 """
 
-from pystl import Interval, Not, Predicate
+from pystl import Always, Interval, Not, Predicate
 
 from .common import BaseSpec, get_semantics
 
@@ -26,12 +26,16 @@ class FastProduce(BaseSpec):
         ).eventually(Interval(0, 10)) & Predicate(
             "x4>0.9", fn=lambda sig, t: sig[t, 3] - 0.9
         ).always().eventually(Interval(0, 10))
-        must_produce = Not(must_produce_condition) | produce_result
 
-        inhibit3 = Not(Predicate("x4>0.6", fn=lambda sig, t: sig[t, 3] - 0.6)) | (
-            Predicate("x3<0.3", fn=lambda sig, t: 0.3 - sig[t, 2])
-            .always()
-            .eventually(Interval(0, 20))
+        must_produce = Always(Not(must_produce_condition) | produce_result)
+
+        inhibit3 = Always(
+            Not(Predicate("x4>0.6", fn=lambda sig, t: sig[t, 3] - 0.6))
+            | (
+                Predicate("x3<0.3", fn=lambda sig, t: 0.3 - sig[t, 2])
+                .always()
+                .eventually(Interval(0, 20))
+            )
         )
 
         max1 = Predicate("x1<1.5", fn=lambda sig, t: 1.5 - sig[t, 0]).always()
