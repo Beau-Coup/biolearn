@@ -195,12 +195,12 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
 
         return jnp.concatenate([x_traj, y_traj], axis=-1)
 
-    relu_loss = lambda rhos: jax.nn.relu(1e-6 - rhos).mean()
+    relu_loss = lambda rhos: jax.nn.relu(-rhos).mean()
     soft_relu_loss = lambda rhos: (
         jax.nn.relu(-rhos) + 1e-2 * jax.nn.sigmoid(jax.nn.relu(rhos))
     ).mean()
     slack_relu_loss = lambda rhos, epsilon: (
-        jax.nn.relu(epsilon - rhos) - 0.5 * epsilon
+        jax.nn.relu(epsilon - rhos) - 0.05 * epsilon
     ).mean()
     leaky_relu_loss = lambda rhos: jax.nn.leaky_relu(-rhos).mean()
 
@@ -244,7 +244,7 @@ def run_one(key: jax.Array, lr: float, n_epochs: int, reg_weight: float = 1e-4):
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
     all_losses = []
-    n_points = 256
+    n_points = 512
     n_boundary = n_points // 4
     n_inside = n_points - n_boundary
     for t_final in tqdm(t_horizons, desc="Horizons"):
