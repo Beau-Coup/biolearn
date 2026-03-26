@@ -141,7 +141,7 @@ class BufferModel(eqx.Module):
             solver,
             t0=ts[0],
             t1=ts[-1],
-            dt0=0.01,
+            dt0=0.001,
             y0=y0,
             saveat=diffrax.SaveAt(ts=ts),
             stepsize_controller=stepsize_controller,
@@ -183,14 +183,14 @@ def quadrotor_sampler(
 
 def xor_sampler(key: jax.Array, n_samples: int, n_face: int = 2) -> jax.Array:
     key, subkey = jr.split(key)
-    edge_points = jr.uniform(subkey, (n_face,))
-    step = n_face // 4
-    x0 = jnp.stack([jnp.zeros(step), edge_points[:step]], axis=-1)
-    x1 = jnp.stack([jnp.ones(step), edge_points[step : 2 * step]], axis=-1)
-    x2 = jnp.stack([edge_points[2 * step : 3 * step], jnp.zeros(step)], axis=-1)
-    x3 = jnp.stack([edge_points[3 * step :], jnp.ones(step)], axis=-1)
+    edge_points = jr.uniform(subkey, (n_face * 4,))
+    step = n_face
+    x0 = jnp.stack([jnp.zeros(step) + 0.1, edge_points[:step]], axis=-1)
+    x1 = jnp.stack([jnp.ones(step) * 0.9, edge_points[step : 2 * step]], axis=-1)
+    x2 = jnp.stack([edge_points[2 * step : 3 * step], 0.1 + jnp.zeros(step)], axis=-1)
+    x3 = jnp.stack([edge_points[3 * step :], 0.9 * jnp.ones(step)], axis=-1)
 
-    xs = jnp.concatenate([x0, x1, x2, x3, jr.uniform(key, (n_samples, 2))])
+    xs = jnp.concatenate([x0, x1, x2, x3, jr.uniform(key, (n_samples, 2))], axis=0)
     return xs
 
 
@@ -200,8 +200,8 @@ def hill_sampler(
     n_per_face: int = 1,
 ) -> jax.Array:
 
-    low = jnp.array([0.1, 0.1, 0.1, 0.1, 0.9, 0.9])
-    high = jnp.array([0.4, 0.4, 0.4, 0.4, 1.0, 1.0])
+    low = jnp.array([0.01, 0.01, 0.01, 0.01, 0.99, 0.99])
+    high = jnp.array([0.04, 0.04, 0.04, 0.04, 1.0, 1.0])
 
     key, subkey = jr.split(key)
     edge_samples = sample_hypercube_faces(
@@ -255,15 +255,15 @@ def run_one(key: jax.Array, args: Args):
             t_horizons = [5.0]
             sampler = quadrotor_sampler
         case "nfc":
-            nominal_model = MoormanNFC(2, [2, 1], gamma=1.0, k=0.8, key=subkey)
+            nominal_model = MoormanNFC(2, [2, 1], gamma=1000.0, k=0.8, key=subkey)
             spec = PhiXorFast()
             sim_cfg = SimulateConfig(
                 to_ss=False,
                 stiff=True,
                 throw=True,
-                max_steps=int(2e4),
-                rtol=1e-3,
-                atol=1e-4,
+                max_steps=int(3e4),
+                rtol=1e-4,
+                atol=1e-5,
                 max_stepsize=0.5,
                 progress_bar=False,
             )
@@ -280,7 +280,7 @@ def run_one(key: jax.Array, args: Args):
 
             ss_to_traj = ss_to_traj_xor
 
-            xs = jnp.linspace(0.0, 1.0, 32)
+            xs = jnp.linspace(0.1, 0.9, 32)
             xs = jnp.meshgrid(*[xs, xs])
             x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
 
@@ -321,8 +321,8 @@ def run_one(key: jax.Array, args: Args):
 
             ss_to_traj = ss_to_traj_hill
 
-            xs = jnp.linspace(0.1, 0.4, 10)
-            ys = jnp.linspace(0.9, 1.0, 10)
+            xs = jnp.linspace(0.01, 0.04, 10)
+            ys = jnp.linspace(0.99, 1.0, 10)
             xs = jnp.meshgrid(*[xs, xs, xs, xs, ys, ys])
             x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
 
@@ -363,7 +363,7 @@ def run_one(key: jax.Array, args: Args):
             ).mean()
         case "slackrelu":
             group_loss = lambda rhos, epsilon: (
-                jax.nn.relu(epsilon - rhos) - 0.1 * epsilon
+                jax.nn.relu(epsilon - rhos) - 0.05 * epsilon
             ).mean()
         case "leakyrelu":
             group_loss = lambda rhos, _: jax.nn.leaky_relu(-rhos).mean()
@@ -398,8 +398,7 @@ def run_one(key: jax.Array, args: Args):
         for i in pbar:
             # Sample points
             key, subkey = jr.split(key)
-
-            xs = sampler(key, n_inside, n_boundary)
+            xs = sampler(subkey, n_inside, n_boundary)
 
             # Append importance samples
             if args.importance_sample and importance_buffer.size > 32:
