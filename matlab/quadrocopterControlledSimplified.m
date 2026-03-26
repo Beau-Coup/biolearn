@@ -22,12 +22,25 @@ function dx = quadrocopterControlledSimplified(x,u)
 
 % parameters
 g = 9.81; %[m/s^2], gravity constant
-R = 0.1;
-l = 0.5;
-M_rotor = 0.1;
-M = 1;
-P = 10;
-D = 3;
+
+pos = @(x) exp(x);
+
+R = pos(-0.83801818); %0.1;
+l = pos(1.06936761); %0.5;
+M_rotor = pos(-0.51968967); %0.1;
+M = pos(-2.05464906); %1;
+P = 3.56293838; %10;
+D = 1.25085725; %3;
+% 
+% [Array(-2.05464906, dtype=float64), Array(-0.51968967, dtype=float64), Array(1.06936761, dtype=float64), Array(-0.83801818, dtype=float64), Array(3.56293838, dtype=float64), Array(1.25085725, dtype=float64)]
+% 
+%     log_body_mass: jax.Array
+%     log_rotor_mass: jax.Array
+%     log_length: jax.Array
+%     log_radius: jax.Array
+%     kp: jax.Array
+%     kd: jax.Array
+
 m = M + 4*M_rotor;
 u_1 = 1; % u_1 desired height
 
@@ -40,7 +53,7 @@ J_z = 2*M*R^2/5 + 4*l^2*M_rotor;
 F_temp = m*g - P*(x(3) - u_1) - D*x(9);
 %F = clip(F_temp, 0.5 * m * g, 1.5 * m * g);
 amplitude = 0.5 * m*g;
-F = m*g + amplitude * tanh((F_temp - m*g) / amplitude);
+F = m*g + amplitude * tanh(3*(F_temp - m*g) / amplitude);
 
 % desired 
 
