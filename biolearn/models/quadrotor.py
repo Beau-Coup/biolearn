@@ -56,8 +56,12 @@ class Quadrotor(eqx.Module):
         phi = x[6]
         theta = x[8]
         psi = x[10]
+        amplitude = 0.5 * mass * self.g
+        center = mass * self.g
         controller_f = mass * self.g - self.kp * (x[4] - self.h_ref) - self.kd * x[5]
-        controller_f = (jnp.tanh(controller_f / mass / self.g) + 2) * mass * self.g / 2
+        controller_f = (
+            jnp.tanh((controller_f - center) / amplitude) * amplitude + center
+        )
 
         phi_torque = -phi - x[7]
         theta_torque = -theta - x[9]

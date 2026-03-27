@@ -164,7 +164,6 @@ def quadrotor_sampler(
     n_samples: int,
     n_per_face: int = 1,
 ) -> jax.Array:
-
     key, subkey = jr.split(key)
     edge_samples = sample_hypercube_faces(
         subkey, jnp.ones(6) * -0.4, 0.4 * jnp.ones(6), n_per_face=n_per_face
@@ -199,7 +198,6 @@ def hill_sampler(
     n_samples: int,
     n_per_face: int = 1,
 ) -> jax.Array:
-
     low = jnp.array([0.01, 0.01, 0.01, 0.01, 0.99, 0.99])
     high = jnp.array([0.04, 0.04, 0.04, 0.04, 1.0, 1.0])
 
@@ -241,16 +239,29 @@ def run_one(key: jax.Array, args: Args):
             ts = jnp.arange(0.0, 5.0, 1.0)
 
             def ss_to_traj_q(y_trace, _):
-                y_traj = y_trace[..., 4]  # (B, T, 1)
+                y_traj = y_trace[..., 4:6]  # (B, T, 1)
                 return y_traj
 
             ss_to_traj = ss_to_traj_q
-            xs = jnp.linspace(-0.4, 0.4, 10)
-            xs = jnp.meshgrid(*[xs, xs, xs, xs, xs, xs])
+            xs = jnp.linspace(-0.4, 0.4, 6)
+            ys = jnp.linspace(-0.02, 0.02, 6)
+            xs = jnp.meshgrid(
+                *[
+                    xs,
+                    xs,
+                    xs,
+                    xs,
+                    xs,
+                    xs,
+                    jnp.zeros(0),
+                    ys,
+                    jnp.zeros(0),
+                    ys,
+                    jnp.zeros(0),
+                    ys,
+                ]
+            )
             x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
-            x_test = jnp.concatenate(
-                [x_test, jnp.zeros_like(x_test)], axis=-1
-            )  # Add zero for angular ICs
 
             t_horizons = [5.0]
             sampler = quadrotor_sampler
