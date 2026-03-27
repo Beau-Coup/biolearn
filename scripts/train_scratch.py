@@ -1,5 +1,10 @@
 """Write a t raining script from scratch to easily tune things to have a story for the paper and then bring it all back."""
 
+import os
+
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=4"
+
 import math
 from dataclasses import dataclass
 from functools import partial
@@ -218,10 +223,12 @@ def hill_sampler(
 def run_one(key: jax.Array, args: Args):
     key, subkey = jr.split(key)
 
+    model_keys = jr.split(subkey, args.num_initializations)
+
     match args.system:
         case "quadrotor":
-            quadrotor = Quadrotor(subkey)
-            nominal_model = QuadModel(quadrotor)
+            models = [QuadModel(Quadrotor(k)) for k in model_keys]
+
             spec = HeightMaintain()
             sim_cfg = SimulateConfig(
                 to_ss=False,
@@ -266,8 +273,12 @@ def run_one(key: jax.Array, args: Args):
             t_horizons = [5.0]
             sampler = quadrotor_sampler
         case "nfc":
-            nominal_model = MoormanNFC(2, [2, 1], gamma=1000.0, k=0.8, key=subkey)
+            models = [
+                MoormanNFC(2, [2, 1], gamma=1000.0, k=0.8, key=k) for k in model_keys
+            ]
+
             spec = PhiXorFast()
+
             sim_cfg = SimulateConfig(
                 to_ss=False,
                 stiff=True,
@@ -307,11 +318,10 @@ def run_one(key: jax.Array, args: Args):
                 (4, 2, EdgeType.Activation),  # x5 -> x3
                 (4, 5, EdgeType.Activation),  # x5 -> x6
             ]
-            key, subkey = jr.split(key, 2)
-            nominal_model = BioGNN(subkey, graph, 2.0)
-            spec = FastProduce()
-            nominal_model = BioGnnModel(nominal_model)
 
+            models = [BioGnnModel(BioGNN(k, graph, 2.0)) for k in model_keys]
+
+            spec = FastProduce()
             sim_cfg = SimulateConfig(
                 to_ss=False,
                 stiff=True,
@@ -340,31 +350,6 @@ def run_one(key: jax.Array, args: Args):
             t_horizons = [15.0]
             sampler = hill_sampler
 
-    key, subkey = jr.split(key)
-    model = BufferModel(subkey, nominal_model)
-
-    fast_schedule = optax.exponential_decay(
-        args.lr, args.decay_interval, 0.6, staircase=True
-    )
-    slow_schedule = optax.exponential_decay(
-        args.lr * 0.05, args.decay_interval, 0.6, staircase=True
-    )
-
-    params, static = eqx.partition(model, eqx.is_array)
-    labels = jax.tree_util.tree_map(lambda _: "standard", params)
-    labels = eqx.tree_at(lambda p: p.slack, labels, "slow")
-
-    optimizer = optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.multi_transform(
-            {
-                "standard": optax.adabelief(fast_schedule),
-                "slow": optax.adabelief(slow_schedule),
-            },
-            labels,
-        ),
-    )
-
     match args.loss:
         case "relu":
             group_loss = lambda rhos, _: jax.nn.relu(1e-6 - rhos).mean()
@@ -390,13 +375,52 @@ def run_one(key: jax.Array, args: Args):
         task_loss = group_loss(rhos, model.slack)
         return task_loss + reg * residual_l2(model), rhos
 
+    # Test the models to find the top-k parameter vectors to optimize.
+    losses = jnp.zeros(len(models))
+    for i, model in enumerate(models):
+        key, subkey = jr.split(key)
+        xs = sampler(key, args.n_samples, args.boundary_samples)
+
+        (loss, _), _ = grad_loss(model, xs, ts)
+        losses[i] = loss
+
+    # Get the top k
+    _, inds = jax.lax.top_k(losses, args.num_instantiations)
+
+    key, subkey = jr.split(key)
+    model_keys = jr.split(subkey, args.num_instantiations)
+    models = [BufferModel(model_keys[i], models[i]) for i in inds]
+    models = jax.tree.map(lambda *ms: jnp.stack(ms), *models)
+
+    fast_schedule = optax.exponential_decay(
+        args.lr, args.decay_interval, 0.6, staircase=True
+    )
+    slow_schedule = optax.exponential_decay(
+        args.lr * 0.05, args.decay_interval, 0.6, staircase=True
+    )
+
+    params, static = eqx.partition(models, eqx.is_array)
+    labels = jax.tree_util.tree_map(lambda _: "standard", params)
+    labels = eqx.tree_at(lambda p: p.slack, labels, "slow")
+
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.multi_transform(
+            {
+                "standard": optax.adabelief(fast_schedule),
+                "slow": optax.adabelief(slow_schedule),
+            },
+            labels,
+        ),
+    )
+
     assert args.num_epochs % len(t_horizons) == 0, (
         f"Number of epochs ({args.num_epochs}) can't be split into len(t_horizons)={len(t_horizons)} chunks evenly."
     )
 
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+    opt_states = optimizer.init(eqx.filter(models, eqx.is_array))
 
-    all_losses = []
+    all_losses = np.empty((args.num_instantiations, args.num_epochs))
     n_points = args.n_samples
     n_boundary = args.boundary_samples
     n_inside = max(n_points - n_boundary, 16)
@@ -406,35 +430,44 @@ def run_one(key: jax.Array, args: Args):
         ts = jnp.arange(0.0, t_final, 1.0)
 
         pbar = tqdm(range(args.num_epochs // len(t_horizons)), desc=f"t={t_final}")
-        for i in pbar:
-            # Sample points
+
+        @eqx.filter_vmap
+        def _inner(key: jax.Array, model, opt_state, time_step: jax.Array):
             key, subkey = jr.split(key)
             xs = sampler(subkey, n_inside, n_boundary)
 
             # Append importance samples
             if args.importance_sample and importance_buffer.size > 32:
-                key, subkey = jr.split(key)
-                samples = importance_buffer.sample(subkey, 32)
+                samples = importance_buffer.sample(key, 32)
                 xs = jnp.concatenate([xs, samples], axis=0)
 
             (loss, rhos), grads = grad_loss(
-                model, xs, ts, reg=args.final_reg * (reg_gamma ** (args.num_epochs - i))
+                model,
+                xs,
+                ts,
+                reg=args.final_reg * (reg_gamma ** (args.num_epochs - time_step)),
             )
 
             updates, opt_state = optimizer.update(grads, opt_state)
-            tqdm.set_description(pbar, f"{loss:.2e}")
             model = eqx.apply_updates(model, updates)
 
             if args.importance_sample:
-                failed = jnp.nonzero(rhos < 0)
-                if failed[0].shape[0] > 0:
-                    importance_buffer.insert(jax.lax.stop_gradient(xs[failed]))
+                failed = jnp.nonzero(rhos < 0, size=128)
+                importance_buffer.insert(jax.lax.stop_gradient(xs[failed]))
 
-            all_losses.append(float(loss))
+            return loss, model, opt_state
+
+        for i in pbar:
+            # Vmap over the different parameters
+            # Sample points
+            key, subkey = jr.split(key)
+            loss, models, opt_states = _inner(subkey, models, opt_states, jnp.array(i))
+            tqdm.set_description(pbar, f"{[loss.min(), loss.mean(), loss.max()]:.2e}")
+            all_losses[:, i] = loss
 
     plt.plot(np.arange(len(all_losses)), all_losses)
     plt.yscale("log")
-    plt.show()
+    # plt.show()
     kd = jr.key_data(key)
     plt.savefig(f"figures/losses-{args.system}-{kd[0]}{kd[1]}.png")
 
@@ -479,6 +512,10 @@ class Args:
     """The batch size, or number of samples to take for the integral estimation."""
     boundary_samples: int = 2
     """The number of samples to take on each domain boundary."""
+    num_instantiations: int = 1
+    """The number of parameter initializations to optimize in parallel."""
+    num_initializations: int = 10
+    """The number of parameters to test before starting to optimize."""
 
 
 def main():

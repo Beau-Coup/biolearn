@@ -11,6 +11,11 @@ Usage:
   uv run python -m scripts.plot_robustness_landscape --model-type buffer --freeze-mlp
 """
 
+import os
+
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=4"
+
 import jax
 
 jax.config.update("jax_enable_x64", True)
@@ -34,7 +39,6 @@ from tqdm import tqdm
 from biolearn.models.base import BioModel, SimulateConfig
 from biolearn.models.nfc import NFC, MoormanNFC
 from biolearn.specifications.ss_classification import PhiXorFast
-
 
 # ---------------------------------------------------------------------------
 # MLP and BufferModel (copied from train_scratch.py to avoid __init__.py issues)
@@ -303,7 +307,11 @@ def plot_landscape(
         levels = np.linspace(0, 1, 31)
         boundary = [0.5]
     else:
-        vmax = np.nanmax(np.abs(grid[np.isfinite(grid)])) if np.any(np.isfinite(grid)) else 1.0
+        vmax = (
+            np.nanmax(np.abs(grid[np.isfinite(grid)]))
+            if np.any(np.isfinite(grid))
+            else 1.0
+        )
         vmax = min(vmax, 0.5)
         levels = np.linspace(-vmax, vmax, 31)
         boundary = [0.0]
@@ -407,15 +415,11 @@ def main():
     betas = np.linspace(-args.alpha_range, args.alpha_range, args.grid_size)
 
     if args.mode == "random_dirs":
-        d1, d2 = generate_random_directions(
-            jr.key(args.dir_seed), theta_0, sizes
-        )
+        d1, d2 = generate_random_directions(jr.key(args.dir_seed), theta_0, sizes)
         label_x = "direction 1"
         label_y = "direction 2"
     else:
-        assert args.param_i < D and args.param_j < D, (
-            f"param indices must be < {D}"
-        )
+        assert args.param_i < D and args.param_j < D, f"param indices must be < {D}"
         d1 = None
         d2 = None
         label_x = names[args.param_i]
@@ -423,27 +427,23 @@ def main():
 
     # --- Grid sweep ---
     robustness_grid = np.full((args.grid_size, args.grid_size), np.nan)
-    total = args.grid_size * args.grid_size
+    total = args.grid_size
 
     pbar = tqdm(total=total, desc="Sweep")
-    for i, alpha in enumerate(alphas):
-        for j, beta in enumerate(betas):
-            if args.mode == "random_dirs":
-                theta = theta_0 + alpha * d1 + beta * d2
-            else:
-                theta = theta_0.at[args.param_i].set(
-                    theta_0[args.param_i] + alpha
-                )
-                theta = theta.at[args.param_j].set(
-                    theta_0[args.param_j] + beta
-                )
 
-            try:
-                rhos = eval_fn(theta)
-                robustness_grid[i, j] = aggregate(rhos, args.metric)
-            except Exception:
-                robustness_grid[i, j] = np.nan
-            pbar.update(1)
+    for i, alpha in enumerate(alphas):
+        if args.mode == "random_dirs":
+            theta = theta_0 + alpha * d1 + betas[:, None] * d2  # pyright: ignore
+        else:
+            theta = theta_0.at[args.param_i].set(theta_0[args.param_i] + alpha)
+            theta = theta.at[args.param_j].set(theta_0[args.param_j] + betas)
+
+        try:
+            rhos = jax.vmap(eval_fn)(theta)
+            robustness_grid[i] = jax.vmap(partial(aggregate, metric=args.metric))(rhos)
+        except Exception:
+            robustness_grid[i] = np.nan
+        pbar.update(1)
     pbar.close()
 
     # --- Plot ---
