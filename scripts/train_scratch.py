@@ -37,39 +37,44 @@ from biolearn.models.base import BioModel, SimulateConfig
 from biolearn.utils import sample_hypercube_faces
 
 
-class SamplingBuffer:
+class SamplingBuffer(eqx.Module):
     buffer: jax.Array
+    index: jax.Array
+    size: jax.Array
 
-    def __init__(self, dimension: int, capacity: int = 512):
-        self.buffer = jnp.empty((capacity, dimension))
-        self.size = 0
-        self.capacity = capacity
-        self.add_to = 0
 
-    def insert(self, x: jax.Array):
-        """Add samples
-        x: (B, n)
-        """
-        if x.ndim == 1:
-            x = x.reshape((1, -1))
+def make_buffer(dimension: int, capacity: int) -> SamplingBuffer:
+    return SamplingBuffer(jnp.zeros((capacity, dimension)), jnp.array(0), jnp.array(0))
 
-        len = x.shape[0]
-        if self.add_to + len > self.capacity:
-            limit = self.capacity - self.add_to
 
-            self.buffer = self.buffer.at[self.add_to : self.capacity].set(x[:limit])
+def buffer_insert(
+    buffer: SamplingBuffer, x: jax.Array, mask: jax.Array
+) -> SamplingBuffer:
+    """Insert into buffer where mask is true to avoid resizing."""
+    len = x.shape[0]
+    capacity = buffer.buffer.shape[0]
+    order = jnp.argsort(~mask)
 
-            len = len - limit
-            self.add_to = 0
-            x = x[limit:]
+    sorted_x = x[order]
+    n_new = jnp.sum(mask).astype(jnp.int32)
 
-        self.buffer = self.buffer.at[self.add_to : self.add_to + len].set(x)
-        self.add_to = (self.add_to + len) % self.capacity
-        self.size = max(self.add_to, self.capacity)
+    positions = (buffer.index + jnp.arange(len)) % capacity
+    write_mask = jnp.arange(len) < n_new
 
-    def sample(self, key: jax.Array, n_samples: int) -> jax.Array:
-        indices = jr.choice(key, self.size, (n_samples,))
-        return self.buffer[indices]
+    new_buffer = buffer.buffer.at[positions].set(
+        jnp.where(write_mask[:, None], x, buffer.buffer[positions])
+    )
+
+    new_index = (buffer.index + n_new) % capacity
+    new_size = jnp.minimum(buffer.size + n_new, capacity)
+
+    return SamplingBuffer(new_buffer, new_index, new_size)
+
+
+def buffer_sample(buffer: SamplingBuffer, key: jax.Array, n_samples: int) -> jax.Array:
+    safe_size = jnp.maximum(buffer.size, 1)
+    indices = jr.randint(key, (n_samples,), 0, buffer.buffer.shape[0]) % safe_size
+    return buffer.buffer[indices]
 
 
 class MLP(eqx.Module):
@@ -241,7 +246,10 @@ def run_one(key: jax.Array, args: Args):
                 progress_bar=False,
             )
 
-            importance_buffer = SamplingBuffer(12, capacity=1024)
+            importance_buffers = jax.tree.map(
+                lambda *bs: jnp.stack(bs),
+                *[make_buffer(12, 1024) for _ in range(args.num_instantiations)],
+            )
 
             ts = jnp.arange(0.0, 5.0, 1.0)
 
@@ -250,8 +258,8 @@ def run_one(key: jax.Array, args: Args):
                 return y_traj
 
             ss_to_traj = ss_to_traj_q
-            xs = jnp.linspace(-0.4, 0.4, 6)
-            ys = jnp.linspace(-0.02, 0.02, 6)
+            xs = jnp.linspace(-0.4, 0.4, 4)
+            ys = jnp.linspace(-0.02, 0.02, 4)
             xs = jnp.meshgrid(
                 *[
                     xs,
@@ -260,11 +268,11 @@ def run_one(key: jax.Array, args: Args):
                     xs,
                     xs,
                     xs,
-                    jnp.zeros(0),
+                    jnp.zeros(1),
                     ys,
-                    jnp.zeros(0),
+                    jnp.zeros(1),
                     ys,
-                    jnp.zeros(0),
+                    jnp.zeros(1),
                     ys,
                 ]
             )
@@ -290,7 +298,10 @@ def run_one(key: jax.Array, args: Args):
                 progress_bar=False,
             )
 
-            importance_buffer = SamplingBuffer(2, capacity=1024)
+            importance_buffers = jax.tree.map(
+                lambda *bs: jnp.stack(bs),
+                *[make_buffer(2, 1024) for _ in range(args.num_instantiations)],
+            )
 
             ts = jnp.arange(0.0, 20.0, 1.0)
 
@@ -333,7 +344,10 @@ def run_one(key: jax.Array, args: Args):
                 progress_bar=False,
             )
 
-            importance_buffer = SamplingBuffer(6, capacity=1024)
+            importance_buffers = jax.tree.map(
+                lambda *bs: jnp.stack(bs),
+                *[make_buffer(6, 1024) for _ in range(args.num_instantiations)],
+            )
 
             ts = jnp.arange(0.0, 15.0, 1.0)
 
@@ -375,22 +389,34 @@ def run_one(key: jax.Array, args: Args):
         task_loss = group_loss(rhos, model.slack)
         return task_loss + reg * residual_l2(model), rhos
 
+    def nominal_loss(model, x0, ts, reg=args.regularizer):
+        sim = partial(model.simulate, ts=ts, config=sim_cfg)
+        y_traces, _ = jax.vmap(sim)(x0)
+        safe_traj = ss_to_traj(y_traces, x0)
+        rhos = jax.vmap(spec.evaluate)(safe_traj)
+        task_loss = group_loss(rhos, jnp.array(0.0))
+        return task_loss
+
     # Test the models to find the top-k parameter vectors to optimize.
     losses = jnp.zeros(len(models))
-    for i, model in enumerate(models):
+    for i, model in tqdm(enumerate(models)):
         key, subkey = jr.split(key)
         xs = sampler(key, args.n_samples, args.boundary_samples)
 
-        (loss, _), _ = grad_loss(model, xs, ts)
-        losses[i] = loss
+        loss = nominal_loss(model, xs, ts)
+        losses = losses.at[i].set(loss)
 
     # Get the top k
-    _, inds = jax.lax.top_k(losses, args.num_instantiations)
+    _, inds = jax.lax.top_k(-losses, args.num_instantiations)
 
     key, subkey = jr.split(key)
     model_keys = jr.split(subkey, args.num_instantiations)
-    models = [BufferModel(model_keys[i], models[i]) for i in inds]
-    models = jax.tree.map(lambda *ms: jnp.stack(ms), *models)
+
+    bms = [BufferModel(model_keys[i], models[i]) for i in inds]
+    all_params = [eqx.partition(bm, eqx.is_array)[0] for bm in bms]
+    _, static = eqx.partition(bms[0], eqx.is_array)
+    stacked_params = jax.tree.map(lambda *s: jnp.stack(s), *all_params)
+    models = eqx.combine(stacked_params, static)
 
     fast_schedule = optax.exponential_decay(
         args.lr, args.decay_interval, 0.6, staircase=True
@@ -418,11 +444,14 @@ def run_one(key: jax.Array, args: Args):
         f"Number of epochs ({args.num_epochs}) can't be split into len(t_horizons)={len(t_horizons)} chunks evenly."
     )
 
-    opt_states = optimizer.init(eqx.filter(models, eqx.is_array))
+    opt_states = jax.tree.map(
+        lambda *ps: jnp.stack(ps), *[optimizer.init(p) for p in all_params]
+    )
 
     all_losses = np.empty((args.num_instantiations, args.num_epochs))
     n_points = args.n_samples
     n_boundary = args.boundary_samples
+    n_importance = args.num_importance_samples
     n_inside = max(n_points - n_boundary, 16)
     reg_gamma = (args.regularizer / args.final_reg) ** (1 / args.num_epochs)
 
@@ -431,16 +460,33 @@ def run_one(key: jax.Array, args: Args):
 
         pbar = tqdm(range(args.num_epochs // len(t_horizons)), desc=f"t={t_final}")
 
-        @eqx.filter_vmap
-        def _inner(key: jax.Array, model, opt_state, time_step: jax.Array):
+        @eqx.filter_vmap(in_axes=(0, 0, 0, None, 0, None))
+        def _inner(
+            key: jax.Array,
+            model,
+            opt_state,
+            time_step: jax.Array,
+            importance_buffer: SamplingBuffer,
+            importance_sample: bool = False,
+        ):
             key, subkey = jr.split(key)
             xs = sampler(subkey, n_inside, n_boundary)
 
             # Append importance samples
-            if args.importance_sample and importance_buffer.size > 32:
-                samples = importance_buffer.sample(key, 32)
-                xs = jnp.concatenate([xs, samples], axis=0)
 
+            if importance_sample:
+                importance_samples = buffer_sample(importance_buffer, key, n_importance)
+                importance_samples = jnp.where(
+                    importance_buffer.size > n_importance,
+                    importance_samples,
+                    xs[
+                        :n_importance
+                    ],  # Messes with the mean but better than taking garbage locations
+                )
+
+                xs = jnp.concatenate([xs, importance_samples], axis=0)
+
+            model = eqx.combine(model, static)
             (loss, rhos), grads = grad_loss(
                 model,
                 xs,
@@ -451,18 +497,34 @@ def run_one(key: jax.Array, args: Args):
             updates, opt_state = optimizer.update(grads, opt_state)
             model = eqx.apply_updates(model, updates)
 
-            if args.importance_sample:
-                failed = jnp.nonzero(rhos < 0, size=128)
-                importance_buffer.insert(jax.lax.stop_gradient(xs[failed]))
+            if importance_sample:
+                failed = rhos < 0
+                importance_buffer = buffer_insert(
+                    importance_buffer, jax.lax.stop_gradient(xs), failed
+                )
 
-            return loss, model, opt_state
+            model, _ = eqx.partition(model, eqx.is_array)
 
+            return loss, model, opt_state, importance_buffer
+
+        ms, _ = eqx.partition(models, eqx.is_array)
         for i in pbar:
             # Vmap over the different parameters
             # Sample points
             key, subkey = jr.split(key)
-            loss, models, opt_states = _inner(subkey, models, opt_states, jnp.array(i))
-            tqdm.set_description(pbar, f"{[loss.min(), loss.mean(), loss.max()]:.2e}")
+
+            keys = jr.split(subkey, args.num_instantiations)
+            loss, ms, opt_states, importance_buffers = _inner(
+                keys,
+                ms,
+                opt_states,
+                jnp.array(i),
+                importance_buffers,
+                args.importance_sample,
+            )
+            tqdm.set_description(
+                pbar, f"[{loss.min():.2e}-{loss.mean():.2e}-{loss.max():.2e}]"
+            )
             all_losses[:, i] = loss
 
     plt.plot(np.arange(len(all_losses)), all_losses)
@@ -471,18 +533,42 @@ def run_one(key: jax.Array, args: Args):
     kd = jr.key_data(key)
     plt.savefig(f"figures/losses-{args.system}-{kd[0]}{kd[1]}.png")
 
-    sim = partial(model.nominal_model.simulate, ts=ts, config=sim_cfg)
-    y_traces, _ = jax.vmap(sim)(x_test)
-    traj = ss_to_traj(y_traces, x_test)
-    rhos = jax.vmap(spec.evaluate)(traj)
+    # Test all models, pick the best one
+    models = eqx.combine(ms, static)  # pyright: ignore
 
-    sats = jnp.sum(rhos > 0).astype(int)
-    print(rhos.shape, sats.shape)
+    all_rhos = []
+    for i in range(args.num_instantiations):
+        model_params_i = jax.tree.map(lambda x: x[i], ms)  # pyright: ignore
+        model_i = eqx.combine(model_params_i, static)
+        sim = partial(model_i.nominal_model.simulate, ts=ts, config=sim_cfg)
+        y_traces, _ = jax.vmap(sim)(x_test)
+        traj = ss_to_traj(y_traces, x_test)
+        rhos_i = jax.vmap(spec.evaluate)(traj)
+        all_rhos.append(rhos_i)
 
-    print(f"Satisfied {sats}/{x_test.shape[0]} of initial conditions")
+    rhos = jnp.stack(all_rhos)
+
+    sats = jnp.sum(rhos > 0, axis=1).astype(int)
+    max_sat = jnp.max(sats)
+    ties = sats == max_sat
+
+    # of the ties, pick the one with the least
+    min_robs = jnp.min(rhos, axis=1)
+    min_robs = jnp.where(ties, min_robs, -jnp.inf)  # only consider contenders
+
+    best_model = jnp.argmax(min_robs)
+
+    print(
+        f"Model {best_model} satisfied {max_sat}/{x_test.shape[0]} of initial conditions with least robustness {min_robs[best_model]:.2e}."
+    )
+
+    best_model = jax.tree.map(lambda x: x[best_model], ms)  # pyright: ignore
+    best_model = eqx.combine(best_model, static)
 
     weight_filter = list(
-        filter(eqx.is_inexact_array, jax.tree_util.tree_leaves(model.nominal_model))
+        filter(
+            eqx.is_inexact_array, jax.tree_util.tree_leaves(best_model.nominal_model)
+        )
     )
 
     print(f"Raw model parameters: {[w for w in weight_filter]}")
@@ -516,6 +602,7 @@ class Args:
     """The number of parameter initializations to optimize in parallel."""
     num_initializations: int = 10
     """The number of parameters to test before starting to optimize."""
+    num_importance_samples: int = 32
 
 
 def main():
