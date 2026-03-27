@@ -293,8 +293,7 @@ def run_one(key: jax.Array, args: Args):
             high = jnp.array(
                 [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.0, 0.02, 0.0, 0.02, 0.0, 0.02]
             )
-            xs = jnp.linspace(-0.4, 0.4, 10)
-            xs = jnp.meshgrid(*[xs, xs, xs, xs, xs, xs])
+
             x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
 
             t_horizons = [5.0]
@@ -423,7 +422,7 @@ def run_one(key: jax.Array, args: Args):
     losses = jnp.zeros(len(models))
     for i, model in tqdm(enumerate(models)):
         key, subkey = jr.split(key)
-        xs = sampler(key, args.n_samples, args.boundary_samples)
+        xs = sampler(key, low, high, args.n_samples, args.boundary_samples)
 
         loss = nominal_loss(model, xs, ts)
         losses = losses.at[i].set(loss)
