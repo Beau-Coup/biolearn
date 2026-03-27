@@ -469,86 +469,72 @@ def run_one(key: jax.Array, args: Args):
         lambda *ps: jnp.stack(ps), *[optimizer.init(p) for p in all_params]
     )
 
-    all_losses = np.empty((args.num_instantiations, args.num_epochs))
+    all_losses = []
     n_points = args.n_samples
     n_boundary = args.boundary_samples
     n_importance = args.num_importance_samples
     n_inside = max(n_points - n_boundary, 16)
     reg_gamma = (args.regularizer / args.final_reg) ** (1 / args.num_epochs)
 
+    ms, _ = eqx.partition(models, eqx.is_array)
+
     for t_final in tqdm(t_horizons, desc="Horizons"):
         ts = jnp.arange(0.0, t_final, 1.0)
+        n_steps = args.num_epochs // len(t_horizons)
 
-        pbar = tqdm(range(args.num_epochs // len(t_horizons)), desc=f"t={t_final}")
-
-        @eqx.filter_vmap(in_axes=(0, 0, 0, None, 0, None))
-        def _inner(
-            key: jax.Array,
-            model,
-            opt_state,
-            time_step: jax.Array,
-            importance_buffer: SamplingBuffer,
-            importance_sample: bool = False,
-        ):
+        def _scan_step(carry, step_idx):
+            key, params, opt_state, importance_buffer = carry
             key, subkey = jr.split(key)
             xs = sampler(subkey, low, high, n_inside, n_boundary)
 
-            # Append importance samples
-
-            if importance_sample:
-                importance_samples = buffer_sample(importance_buffer, key, n_importance)
+            if args.importance_sample:
+                key, ik = jr.split(key)
+                importance_samples = buffer_sample(importance_buffer, ik, n_importance)
                 importance_samples = jnp.where(
                     importance_buffer.size > n_importance,
                     importance_samples,
-                    xs[
-                        :n_importance
-                    ],  # Messes with the mean but better than taking garbage locations
+                    xs[:n_importance],
                 )
-
                 xs = jnp.concatenate([xs, importance_samples], axis=0)
 
-            model = eqx.combine(model, static)
+            model = eqx.combine(params, static)
             (loss, rhos), grads = grad_loss(
                 model,
                 xs,
                 ts,
-                reg=args.final_reg * (reg_gamma ** (args.num_epochs - time_step)),
+                reg=args.final_reg * (reg_gamma ** (args.num_epochs - step_idx)),
             )
 
             updates, opt_state = optimizer.update(grads, opt_state)
             model = eqx.apply_updates(model, updates)
 
-            if importance_sample:
+            if args.importance_sample:
                 failed = rhos < 0
                 importance_buffer = buffer_insert(
                     importance_buffer, jax.lax.stop_gradient(xs), failed
                 )
 
-            model, _ = eqx.partition(model, eqx.is_array)
+            params, _ = eqx.partition(model, eqx.is_array)
+            return (key, params, opt_state, importance_buffer), loss
 
-            return loss, model, opt_state, importance_buffer
-
-        ms, _ = eqx.partition(models, eqx.is_array)
-        for i in pbar:
-            # Vmap over the different parameters
-            # Sample points
-            key, subkey = jr.split(key)
-
-            keys = jr.split(subkey, args.num_instantiations)
-            loss, ms, opt_states, importance_buffers = _inner(
-                keys,
-                ms,
-                opt_states,
-                jnp.array(i),
-                importance_buffers,
-                args.importance_sample,
+        @eqx.filter_vmap(in_axes=(0, 0, 0, 0))
+        def _train_horizon(key, params, opt_state, importance_buffer):
+            init = (key, params, opt_state, importance_buffer)
+            (_, final_params, final_opt_state, final_buf), losses = jax.lax.scan(
+                _scan_step, init, jnp.arange(n_steps)
             )
-            tqdm.set_description(
-                pbar, f"[{loss.min():.2e}-{loss.mean():.2e}-{loss.max():.2e}]"
-            )
-            all_losses[:, i] = loss
+            return final_params, final_opt_state, final_buf, losses
 
-    plt.plot(np.arange(len(all_losses)), all_losses)
+        key, subkey = jr.split(key)
+        keys = jr.split(subkey, args.num_instantiations)
+        ms, opt_states, importance_buffers, horizon_losses = _train_horizon(
+            keys, ms, opt_states, importance_buffers
+        )
+        all_losses.append(horizon_losses)
+
+    all_losses = jnp.concatenate(all_losses, axis=1)
+
+    plt.plot(np.arange(all_losses.shape[1]), all_losses.T)
     plt.yscale("log")
     # plt.show()
     kd = jr.key_data(key)
