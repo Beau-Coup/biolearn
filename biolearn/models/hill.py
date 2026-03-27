@@ -9,6 +9,11 @@ import jaxtyping as jt
 from .base import BioModel, SimulateConfig
 
 
+def _parameter_transform(x: jax.Array) -> jax.Array:
+    """Transform parameters to range [0.001, 1]"""
+    return 0.5 * (jnp.tanh(x) + 1) * (1 - 0.001) + 0.001
+
+
 class EdgeType(eqx.Enumeration):
     Activation = "Activation"
     Inhibition = "Inhibition"
@@ -86,14 +91,14 @@ class InhibitActivateAggregator(eqx.Module):
         return (
             1.0
             + jnp.sum(
-                self.k_inhibit
+                _parameter_transform(self.k_inhibit)
                 * (
                     x[jnp.array(self.inhibit_indices, dtype=jnp.int32)]
                     ** jnp.array(self.hill_inhibit)
                 )
             )
             + jnp.sum(
-                self.k_activate
+                _parameter_transform(self.k_activate)
                 * (
                     x[jnp.array(self.activate_indices, dtype=jnp.int32)]
                     ** jnp.array(self.hill_activate)
@@ -106,7 +111,7 @@ class InhibitActivateAggregator(eqx.Module):
             return jnp.array(1.0)
 
         return jnp.sum(
-            self.k_activate
+            _parameter_transform(self.k_activate)
             * (
                 x[jnp.array(self.activate_indices, dtype=jnp.int32)]
                 ** jnp.array(self.hill_activate)
@@ -185,9 +190,10 @@ class BioGNN(eqx.Module):
         dx = dx + dx_agg
 
         return (
-            jnp.exp(self.log_nu) * dx
-            - jnp.exp(self.log_decay) * x
-            + jnp.exp(self.log_growth)
+            _parameter_transform(self.log_nu) * dx
+            - _parameter_transform(self.log_decay) * x
+            # + jnp.exp(self.log_growth)
+            + jnp.array([0.5, 0.5, 0, 0, 0, 0])
         )
 
     @property

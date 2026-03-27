@@ -30,19 +30,28 @@ model = BioGnnModel(gnn)
 
 # ── Load trained parameters ─────────────────────────────────────────
 trained_params = [
-    jnp.array([1.3129978]),
+    jnp.array([1.44625236], dtype=jnp.float64),
     jnp.array([], dtype=jnp.float64),
     jnp.array([], dtype=jnp.float64),
-    jnp.array([0.65010154, 0.61845012, 0.68321468]),
+    jnp.array([0.49752798, 0.51152929, 0.72761438], dtype=jnp.float64),
     jnp.array([], dtype=jnp.float64),
-    jnp.array([0.90455099]),
-    jnp.array([1.10754043]),
+    jnp.array([0.77624723], dtype=jnp.float64),
+    jnp.array([0.7888825], dtype=jnp.float64),
     jnp.array([], dtype=jnp.float64),
     jnp.array([], dtype=jnp.float64),
-    jnp.array([1.12066345]),
-    jnp.array([0.95419638, 1.32162195, 0.5602955, 0.22627463, 0.97550643, 0.06480319]),
-    jnp.array([0.62991165, 0.51931797, 0.58564616, 0.19392169, 0.11673345, 0.20178572]),
-    jnp.array([0.59948031, 0.46645324, 0.7476694, 0.04413639, 0.61981665, 1.08424949]),
+    jnp.array([0.99652738], dtype=jnp.float64),
+    jnp.array(
+        [1.03080479, 1.39763618, 0.62764375, 1.31451149, 0.88295921, 0.73878105],
+        dtype=jnp.float64,
+    ),
+    jnp.array(
+        [0.66920203, 0.10839958, 0.20379893, 0.45147143, 0.52794752, 0.8918487],
+        dtype=jnp.float64,
+    ),
+    jnp.array(
+        [-0.3121208, 0.43119083, -0.18248559, -0.01214027, 0.05805096, 0.72434505],
+        dtype=jnp.float64,
+    ),
 ]
 
 # Replace all learnable leaves with trained values
@@ -53,7 +62,7 @@ params = jax.tree_util.tree_unflatten(
 model = eqx.combine(params, static)
 
 # ── Simulation config ───────────────────────────────────────────────
-ts = jnp.arange(0, 25, 1.0)
+ts = jnp.arange(0, 25, 0.1)
 cfg = SimulateConfig(
     to_ss=False,
     stiff=True,
@@ -66,9 +75,9 @@ cfg = SimulateConfig(
 
 # ── Initial conditions ──────────────────────────────────────────────
 inputs = [
-    jnp.array([0.1, 0.1, 0.1, 0.1, 0.9, 0.9]),
-    jnp.array([0.2, 0.2, 0.1, 0.1, 0.9, 0.9]),
-    jnp.array([0.1, 0.2, 0.1, 0.4, 0.1, 1.0]),
+    jnp.array([0.01, 0.01, 0.01, 0.01, 0.99, 0.99]),
+    jnp.array([0.02, 0.02, 0.01, 0.01, 0.99, 0.99]),
+    jnp.array([0.00, 0.0, 0.0, 0.0, 1.0, 1.0]),
 ]
 
 # ── Plot ─────────────────────────────────────────────────────────────

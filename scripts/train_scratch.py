@@ -171,29 +171,38 @@ def residual_l2(model: BufferModel) -> jax.Array:
 
 def quadrotor_sampler(
     key: jax.Array,
+    low: jax.Array,
+    high: jax.Array,
     n_samples: int,
     n_per_face: int = 1,
 ) -> jax.Array:
+
+    nonzero = [0, 1, 2, 3, 4, 5, 7, 9, 11]
+    l = low[nonzero]
+    h = high[nonzero]
     key, subkey = jr.split(key)
-    edge_samples = sample_hypercube_faces(
-        subkey, jnp.ones(6) * -0.4, 0.4 * jnp.ones(6), n_per_face=n_per_face
-    )
+    edge_samples = sample_hypercube_faces(subkey, l, h, n_per_face=n_per_face)
 
     xs = jnp.concatenate(
         [
             edge_samples,
-            jr.uniform(key, (n_samples, 6), minval=-0.4, maxval=0.4),
+            jr.uniform(key, (n_samples,), minval=l, maxval=h),
         ]
     )
-    xs = jnp.concatenate([xs, jnp.zeros_like(xs)], axis=1)
 
-    return xs
+    result = jnp.zeros((xs.shape[0], 12))
+    result = result.at[:, nonzero].set(xs)
+
+    return result
 
 
-def xor_sampler(key: jax.Array, n_samples: int, n_face: int = 2) -> jax.Array:
+def xor_sampler(
+    key: jax.Array, low: jax.Array, high: jax.Array, n_samples: int, n_face: int = 2
+) -> jax.Array:
     key, subkey = jr.split(key)
     edge_points = jr.uniform(subkey, (n_face * 4,))
     step = n_face
+
     x0 = jnp.stack([jnp.zeros(step) + 0.1, edge_points[:step]], axis=-1)
     x1 = jnp.stack([jnp.ones(step) * 0.9, edge_points[step : 2 * step]], axis=-1)
     x2 = jnp.stack([edge_points[2 * step : 3 * step], 0.1 + jnp.zeros(step)], axis=-1)
@@ -205,6 +214,8 @@ def xor_sampler(key: jax.Array, n_samples: int, n_face: int = 2) -> jax.Array:
 
 def hill_sampler(
     key: jax.Array,
+    low: jax.Array,
+    high: jax.Array,
     n_samples: int,
     n_per_face: int = 1,
 ) -> jax.Array:
@@ -276,6 +287,14 @@ def run_one(key: jax.Array, args: Args):
                     ys,
                 ]
             )
+            low = jnp.array(
+                [-0.4, -0.4, -0.4, -0.4, -0.4, -0.4, 0.0, -0.02, 0.0, -0.02, 0.0, -0.02]
+            )
+            high = jnp.array(
+                [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.0, 0.02, 0.0, 0.02, 0.0, 0.02]
+            )
+            xs = jnp.linspace(-0.4, 0.4, 10)
+            xs = jnp.meshgrid(*[xs, xs, xs, xs, xs, xs])
             x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
 
             t_horizons = [5.0]
@@ -349,19 +368,22 @@ def run_one(key: jax.Array, args: Args):
                 *[make_buffer(6, 1024) for _ in range(args.num_instantiations)],
             )
 
-            ts = jnp.arange(0.0, 15.0, 1.0)
+            t_final = 15.0
+            ts = jnp.arange(0.0, t_final, 1.0)
 
             def ss_to_traj_hill(y_trace, x):
                 return y_trace
 
             ss_to_traj = ss_to_traj_hill
 
-            xs = jnp.linspace(0.01, 0.04, 10)
-            ys = jnp.linspace(0.99, 1.0, 10)
-            xs = jnp.meshgrid(*[xs, xs, xs, xs, ys, ys])
+            low = jnp.array([0.0, 0.0, 0.00, 0.0, 0.90, 0.90])
+            high = jnp.array([0.2, 0.2, 0.2, 0.2, 1.0, 1.0])
+
+            xs = jnp.linspace(low, high, 10)
+            xs = jnp.meshgrid(*xs.T)
             x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
 
-            t_horizons = [15.0]
+            t_horizons = [t_final]
             sampler = hill_sampler
 
     match args.loss:
@@ -470,7 +492,7 @@ def run_one(key: jax.Array, args: Args):
             importance_sample: bool = False,
         ):
             key, subkey = jr.split(key)
-            xs = sampler(subkey, n_inside, n_boundary)
+            xs = sampler(subkey, low, high, n_inside, n_boundary)
 
             # Append importance samples
 
