@@ -5,9 +5,12 @@ import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=4"
 
+import json
 import math
-from dataclasses import dataclass
+import time
+from dataclasses import asdict, dataclass
 from functools import partial
+from pathlib import Path
 from typing import Literal
 
 import jax
@@ -62,7 +65,7 @@ def buffer_insert(
     write_mask = jnp.arange(len) < n_new
 
     new_buffer = buffer.buffer.at[positions].set(
-        jnp.where(write_mask[:, None], x, buffer.buffer[positions])
+        jnp.where(write_mask[:, None], sorted_x, buffer.buffer[positions])
     )
 
     new_index = (buffer.index + n_new) % capacity
@@ -178,15 +181,15 @@ def quadrotor_sampler(
 ) -> jax.Array:
 
     nonzero = [0, 1, 2, 3, 4, 5, 7, 9, 11]
-    l = low[nonzero]
-    h = high[nonzero]
+    l = low[jnp.array(nonzero)]
+    h = high[jnp.array(nonzero)]
     key, subkey = jr.split(key)
     edge_samples = sample_hypercube_faces(subkey, l, h, n_per_face=n_per_face)
 
     xs = jnp.concatenate(
         [
             edge_samples,
-            jr.uniform(key, (n_samples,), minval=l, maxval=h),
+            jr.uniform(key, (n_samples, len(nonzero)), minval=l, maxval=h),
         ]
     )
 
@@ -238,6 +241,15 @@ def hill_sampler(
 
 def run_one(key: jax.Array, args: Args):
     key, subkey = jr.split(key)
+    t_start = time.monotonic()
+
+    kd = jr.key_data(key)
+    run_id = f"{args.system}_{kd[0]:x}{kd[1]:x}"
+    run_dir = Path("results") / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(run_dir / "args.json", "w") as f:
+        json.dump(asdict(args), f, indent=2)
 
     model_keys = jr.split(subkey, args.num_initializations)
 
@@ -329,6 +341,8 @@ def run_one(key: jax.Array, args: Args):
 
                 return jnp.concatenate([x_traj, y_traj], axis=-1)
 
+            low = jnp.array([0.1, 0.1])
+            high = jnp.array([0.9, 0.9])
             ss_to_traj = ss_to_traj_xor
 
             xs = jnp.linspace(0.1, 0.9, 32)
@@ -420,14 +434,20 @@ def run_one(key: jax.Array, args: Args):
 
     # Test the models to find the top-k parameter vectors to optimize.
     losses = jnp.zeros(len(models))
-    for i, model in tqdm(enumerate(models)):
+    model_pbar = tqdm(enumerate(models), total=len(models), desc="Selecting models")
+    for i, model in model_pbar:
         key, subkey = jr.split(key)
         xs = sampler(key, low, high, args.n_samples, args.boundary_samples)
 
         loss = nominal_loss(model, xs, ts)
         losses = losses.at[i].set(loss)
+        model_pbar.set_postfix(loss=f"{float(loss):.2e}")
 
     # Get the top k
+    np.savez(
+        run_dir / "init_selection.npz",
+        losses=np.asarray(losses),
+    )
     _, inds = jax.lax.top_k(-losses, args.num_instantiations)
 
     key, subkey = jr.split(key)
@@ -534,11 +554,18 @@ def run_one(key: jax.Array, args: Args):
 
     all_losses = jnp.concatenate(all_losses, axis=1)
 
-    plt.plot(np.arange(all_losses.shape[1]), all_losses.T)
-    plt.yscale("log")
-    # plt.show()
-    kd = jr.key_data(key)
-    plt.savefig(f"figures/losses-{args.system}-{kd[0]}{kd[1]}.png")
+    t_train = time.monotonic() - t_start
+
+    # Save training curves
+    np.savez(run_dir / "training_curves.npz", losses=all_losses)
+
+    fig, ax = plt.subplots()
+    ax.plot(np.arange(all_losses.shape[1]), all_losses.T)
+    ax.set_yscale("log")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    fig.savefig(run_dir / "losses.png")
+    plt.close(fig)
 
     # Test all models, pick the best one
     models = eqx.combine(ms, static)  # pyright: ignore
@@ -553,6 +580,15 @@ def run_one(key: jax.Array, args: Args):
         rhos_i = jax.vmap(spec.evaluate)(traj)
         all_rhos.append(rhos_i)
 
+        weight_filter = list(
+            filter(
+                eqx.is_array,
+                jax.tree_util.tree_leaves(model_i.nominal_model),
+            )
+        )
+
+        print(f"Raw model parameters for model {i}: {[w for w in weight_filter]}")
+
     rhos = jnp.stack(all_rhos)
 
     sats = jnp.sum(rhos > 0, axis=1).astype(int)
@@ -563,13 +599,13 @@ def run_one(key: jax.Array, args: Args):
     min_robs = jnp.min(rhos, axis=1)
     min_robs = jnp.where(ties, min_robs, -jnp.inf)  # only consider contenders
 
-    best_model = jnp.argmax(min_robs)
+    best_idx = int(jnp.argmax(min_robs))
 
     print(
-        f"Model {best_model} satisfied {max_sat}/{x_test.shape[0]} of initial conditions with least robustness {min_robs[best_model]:.2e}."
+        f"Model {best_idx} satisfied {max_sat}/{x_test.shape[0]} of initial conditions with least robustness {min_robs[best_idx]:.2e}."
     )
 
-    best_model = jax.tree.map(lambda x: x[best_model], ms)  # pyright: ignore
+    best_model = jax.tree.map(lambda x: x[best_idx], ms)  # pyright: ignore
     best_model = eqx.combine(best_model, static)
 
     weight_filter = list(
@@ -579,6 +615,36 @@ def run_one(key: jax.Array, args: Args):
     )
 
     print(f"Raw model parameters: {[w for w in weight_filter]}")
+
+    # Save holdout evaluation
+    np.savez(
+        run_dir / "holdout.npz",
+        rhos=np.asarray(rhos),
+        sats=np.asarray(sats),
+        min_robs=np.asarray(min_robs),
+        x_test=np.asarray(x_test),
+    )
+
+    # Save best model
+    eqx.tree_serialise_leaves(run_dir / "best_model.eqx", best_model)
+
+    # Save all trained models
+    all_models = eqx.combine(ms, static)
+    eqx.tree_serialise_leaves(run_dir / "all_models.eqx", all_models)
+
+    # Save summary
+    summary = {
+        "best_model_idx": best_idx,
+        "best_sat": int(max_sat),
+        "total_test_points": int(x_test.shape[0]),
+        "best_min_robustness": float(min_robs[best_idx]),
+        "final_loss_per_model": all_losses[:, -1].tolist(),
+        "train_time_s": t_train,
+    }
+    with open(run_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"Results saved to {run_dir}/ (train time: {t_train:.1f}s)")
 
 
 @dataclass

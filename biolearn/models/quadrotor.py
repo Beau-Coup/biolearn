@@ -45,7 +45,7 @@ class Quadrotor(eqx.Module):
         """
         bm = jnp.exp(self.log_body_mass)
         rm = jnp.exp(self.log_rotor_mass)
-        mass = bm + rm
+        mass = bm + 4.0 * rm
         body_inertia = 0.4 * bm * (jnp.exp(2 * self.log_radius))
         rotor_inertia = 2.0 * rm * (jnp.exp(2.0 * self.log_length))
 
@@ -56,7 +56,7 @@ class Quadrotor(eqx.Module):
         phi = x[6]
         theta = x[8]
         psi = x[10]
-        amplitude = 0.5 * 10.0
+        amplitude = 5.0
         center = 10.0
         controller_f = mass * self.g - self.kp * (x[4] - self.h_ref) - self.kd * x[5]
         controller_f = (
