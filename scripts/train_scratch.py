@@ -2,8 +2,8 @@
 
 import os
 
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=4"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=2"
 
 import json
 import math
@@ -27,7 +27,7 @@ from biolearn.models.quadrotor import QuadModel, Quadrotor
 from biolearn.specifications.quadrotor import HeightMaintain
 from biolearn.specifications.ss_classification import PhiXorFast
 
-jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", False)
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 2.0)
 
@@ -254,7 +254,7 @@ def run_one(key: jax.Array, args: Args):
                 to_ss=False,
                 stiff=False,
                 throw=True,
-                max_steps=int(3e4),
+                max_steps=2048,
                 rtol=1e-3,
                 atol=1e-4,
                 max_stepsize=0.5,
@@ -263,7 +263,7 @@ def run_one(key: jax.Array, args: Args):
 
             importance_buffers = jax.tree.map(
                 lambda *bs: jnp.stack(bs),
-                *[make_buffer(12, 1024) for _ in range(args.num_instantiations)],
+                *[make_buffer(12, 512) for _ in range(args.num_instantiations)],
             )
 
             ts = jnp.arange(0.0, 5.0, 1.0)
@@ -313,7 +313,7 @@ def run_one(key: jax.Array, args: Args):
                 to_ss=False,
                 stiff=True,
                 throw=True,
-                max_steps=int(3e4),
+                max_steps=4096,
                 rtol=1e-4,
                 atol=1e-5,
                 max_stepsize=0.5,
@@ -361,7 +361,7 @@ def run_one(key: jax.Array, args: Args):
                 to_ss=False,
                 stiff=True,
                 throw=True,
-                max_steps=int(2e4),
+                max_steps=4096,
                 rtol=1e-3,
                 atol=1e-4,
                 max_stepsize=0.5,
@@ -407,15 +407,15 @@ def run_one(key: jax.Array, args: Args):
         case "exponential":
             group_loss = lambda rhos, _: jnp.exp(-rhos).mean()
 
-    def _sim_and_eval(sim, x0_chunk):
-        """Simulate and evaluate a chunk of initial conditions."""
-        y_traces, _ = jax.vmap(sim)(x0_chunk)
-        safe_traj = ss_to_traj(y_traces, x0_chunk)
+    def _sim_and_eval(sim, x0):
+        """Simulate and evaluate initial conditions."""
+        y_traces, _ = jax.vmap(sim)(x0)
+        safe_traj = ss_to_traj(y_traces, x0)
         rhos = jax.vmap(spec.evaluate)(safe_traj)
         return rhos
 
     def _chunked_sim_eval(sim, x0):
-        """Process samples in chunks to limit peak memory."""
+        """Process samples in chunks to limit peak memory (evaluation only)."""
         bs = args.batch_size
         n = x0.shape[0]
         n_padded = ((n - 1) // bs + 1) * bs
@@ -427,13 +427,16 @@ def run_one(key: jax.Array, args: Args):
     @eqx.filter_value_and_grad(has_aux=True)
     def grad_loss(model, x0, ts, reg=args.regularizer):
         sim = partial(model.simulate, ts=ts, config=sim_cfg)
-        rhos = _chunked_sim_eval(sim, x0)
+        y_traces, _ = jax.vmap(sim)(x0)
+        safe_traj = ss_to_traj(y_traces, x0)
+        rhos = jax.vmap(spec.evaluate)(safe_traj)
         task_loss = group_loss(rhos, model.slack)
         return task_loss + reg * residual_l2(model), rhos
 
+    @eqx.filter_jit
     def nominal_loss(model, x0, ts, reg=args.regularizer):
         sim = partial(model.simulate, ts=ts, config=sim_cfg)
-        rhos = _chunked_sim_eval(sim, x0)
+        rhos = _sim_and_eval(sim, x0)
         task_loss = group_loss(rhos, jnp.array(0.0))
         return task_loss
 
@@ -576,12 +579,16 @@ def run_one(key: jax.Array, args: Args):
     # Test all models, pick the best one
     models = eqx.combine(ms, static)  # pyright: ignore
 
+    @eqx.filter_jit
+    def _eval_model(model, x_test, ts):
+        sim = partial(model.nominal_model.simulate, ts=ts, config=sim_cfg)
+        return _chunked_sim_eval(sim, x_test)
+
     all_rhos = []
     for i in range(args.num_instantiations):
         model_params_i = jax.tree.map(lambda x: x[i], ms)  # pyright: ignore
         model_i = eqx.combine(model_params_i, static)
-        sim = partial(model_i.nominal_model.simulate, ts=ts, config=sim_cfg)
-        rhos_i = _chunked_sim_eval(sim, x_test)
+        rhos_i = _eval_model(model_i, x_test, ts)
         all_rhos.append(rhos_i)
 
         weight_filter = list(
@@ -680,7 +687,7 @@ class Args:
     num_initializations: int = 10
     """The number of parameters to test before starting to optimize."""
     num_importance_samples: int = 32
-    batch_size: int = 512
+    batch_size: int = 128
     """Max samples to simulate in parallel. Limits peak memory."""
 
 
