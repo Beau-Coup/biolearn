@@ -285,8 +285,8 @@ def run_one(key: jax.Array, args: Args):
                 return y_traj
 
             ss_to_traj = ss_to_traj_q
-            xs = jnp.linspace(-0.4, 0.4, 4)
-            ys = jnp.linspace(-0.02, 0.02, 4)
+            xs = jnp.linspace(-0.45, 0.45, 4)
+            ys = jnp.linspace(-0.025, 0.025, 4)
             xs = jnp.meshgrid(
                 *[
                     xs,
