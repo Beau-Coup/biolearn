@@ -179,7 +179,6 @@ def quadrotor_sampler(
     n_samples: int,
     n_per_face: int = 1,
 ) -> jax.Array:
-
     nonzero = [0, 1, 2, 3, 4, 5, 7, 9, 11]
     l = low[jnp.array(nonzero)]
     h = high[jnp.array(nonzero)]
@@ -222,9 +221,6 @@ def hill_sampler(
     n_samples: int,
     n_per_face: int = 1,
 ) -> jax.Array:
-    low = jnp.array([0.01, 0.01, 0.01, 0.01, 0.99, 0.99])
-    high = jnp.array([0.04, 0.04, 0.04, 0.04, 1.0, 1.0])
-
     key, subkey = jr.split(key)
     edge_samples = sample_hypercube_faces(
         subkey,
@@ -389,8 +385,8 @@ def run_one(key: jax.Array, args: Args):
 
             ss_to_traj = ss_to_traj_hill
 
-            low = jnp.array([0.0, 0.0, 0.00, 0.0, 0.90, 0.90])
-            high = jnp.array([0.2, 0.2, 0.2, 0.2, 1.0, 1.0])
+            low = jnp.array([0.0, 0.0, 0.01, 0.01, 0.99, 0.99])
+            high = jnp.array([0.2, 0.2, 0.04, 0.04, 1.0, 1.0])
 
             xs = jnp.linspace(low, high, 10)
             xs = jnp.meshgrid(*xs.T)
