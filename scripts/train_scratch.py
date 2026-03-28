@@ -5,6 +5,7 @@ import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
 os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=2"
 
+import hashlib
 import json
 import math
 import subprocess
@@ -28,7 +29,7 @@ from biolearn.models.quadrotor import QuadModel, Quadrotor
 from biolearn.specifications.quadrotor import HeightMaintain
 from biolearn.specifications.ss_classification import PhiXorFast
 
-jax.config.update("jax_enable_x64", False)
+jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 2.0)
 
@@ -242,7 +243,10 @@ def run_one(key: jax.Array, args: Args):
     except (subprocess.CalledProcessError, FileNotFoundError):
         commit = "unknown"
 
-    run_id = f"{args.system}_{commit}_{time.time()}"
+    args_hash = hashlib.sha256(
+        json.dumps(asdict(args), sort_keys=True).encode()
+    ).hexdigest()[:8]
+    run_id = f"{args.system}_{commit}_{args_hash}"
     run_dir = Path("results") / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -262,9 +266,10 @@ def run_one(key: jax.Array, args: Args):
                 to_ss=False,
                 stiff=False,
                 throw=True,
-                max_steps=int(1e6),
+                max_steps=4096,
                 rtol=1e-3,
                 atol=1e-4,
+                max_stepsize=0.5,
                 progress_bar=False,
             )
 
@@ -299,10 +304,23 @@ def run_one(key: jax.Array, args: Args):
                 ]
             )
             low = jnp.array(
-                [-0.4, -0.4, -0.4, -0.4, -0.4, -0.4, 0.0, -0.02, 0.0, -0.02, 0.0, -0.02]
+                [
+                    -0.45,
+                    -0.45,
+                    -0.45,
+                    -0.45,
+                    -0.45,
+                    -0.45,
+                    0.0,
+                    -0.025,
+                    0.0,
+                    -0.025,
+                    0.0,
+                    -0.025,
+                ]
             )
             high = jnp.array(
-                [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.0, 0.02, 0.0, 0.02, 0.0, 0.02]
+                [0.45, 0.45, 0.45, 0.45, 0.45, 0.45, 0.0, 0.025, 0.0, 0.025, 0.0, 0.025]
             )
 
             x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
