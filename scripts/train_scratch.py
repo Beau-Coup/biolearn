@@ -240,7 +240,7 @@ def run_one(key: jax.Array, args: Args):
         commit = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"], text=True
         ).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except subprocess.CalledProcessError, FileNotFoundError:
         commit = "unknown"
 
     args_hash = hashlib.sha256(

@@ -11,6 +11,9 @@ from .base import BioModel, SimulateConfig
 
 def _parameter_transform(x: jax.Array) -> jax.Array:
     """Transform parameters to range [0.001, 1]"""
+
+    # return jax.nn.sigmoid(x) * (1 - 0.001) + 0.001
+    return jnp.clip(x, 0.001, 1)
     return 0.5 * (jnp.tanh(x) + 1) * (1 - 0.001) + 0.001
 
 
@@ -78,9 +81,15 @@ class InhibitActivateAggregator(eqx.Module):
     k_inhibit: jax.Array
     k_activate: jax.Array
 
-    def __init__(self, activations: List[Activation], inhibitions: List[Inhibition]):
-        self.k_inhibit = jnp.ones(len(inhibitions))
-        self.k_activate = jnp.ones(len(activations))
+    def __init__(
+        self,
+        key: jax.Array,
+        activations: List[Activation],
+        inhibitions: List[Inhibition],
+    ):
+        k1, k2 = jr.split(key)
+        self.k_inhibit = jr.uniform(k1, (len(inhibitions),), minval=0.001, maxval=1.0)
+        self.k_activate = jr.uniform(k2, (len(activations),), minval=0.001, maxval=1.0)
 
         self.hill_inhibit = [edge.hill_coefficient for edge in inhibitions]
         self.hill_activate = [edge.hill_coefficient for edge in activations]
@@ -162,19 +171,26 @@ class BioGNN(eqx.Module):
         agg_indices = []
         for node in range(n_nodes):
             if recipient_activations[node] or recipient_inhibitions[node]:
+                key, subkey = jr.split(key)
                 agg_indices.append(node)
                 aggregators.append(
                     InhibitActivateAggregator(
-                        recipient_activations[node], recipient_inhibitions[node]
+                        subkey, recipient_activations[node], recipient_inhibitions[node]
                     )
                 )
         self.aggregators = aggregators
         self.agg_indices = agg_indices
 
         k1, k2, k3 = jr.split(key, 3)
-        self.log_decay = jr.uniform(k1, n_nodes)
-        self.log_growth = jr.uniform(k2, n_nodes)
-        self.log_nu = jr.uniform(k3, n_nodes)
+        self.log_decay = jr.uniform(
+            k1, n_nodes, minval=jnp.log(0.001), maxval=jnp.log(1.0)
+        )
+        self.log_growth = jr.uniform(
+            k2, n_nodes, minval=jnp.log(0.001), maxval=jnp.log(1.0)
+        )
+        self.log_nu = jr.uniform(
+            k3, n_nodes, minval=jnp.log(0.001), maxval=jnp.log(1.0)
+        )
 
     def _aggregator_sum(self, x: jax.Array) -> jax.Array:
         out = jnp.zeros_like(x)

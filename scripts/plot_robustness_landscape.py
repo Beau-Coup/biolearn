@@ -373,6 +373,22 @@ def aggregate(rhos, metric: str):
 # Plotting
 # ---------------------------------------------------------------------------
 
+METRIC_LABELS = {
+    "sat_frac": r"Sat.\ fraction",
+    "mean": r"$\bar{\rho}$",
+    "min": r"$\min \rho$",
+}
+
+plt.rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.size": 8,
+    "axes.labelsize": 9,
+    "axes.titlesize": 9,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+})
+
 
 def plot_landscape(
     alpha_vals,
@@ -381,13 +397,13 @@ def plot_landscape(
     metric,
     label_x,
     label_y,
-    title_suffix,
+    title,
     output_path,
     show,
 ):
     A, B = np.meshgrid(alpha_vals, beta_vals, indexing="ij")
 
-    fig, ax = plt.subplots(figsize=(7, 6))
+    fig, ax = plt.subplots(figsize=(3.5, 2.8))
 
     if metric == "sat_frac":
         levels = np.linspace(0, 1, 31)
@@ -403,15 +419,17 @@ def plot_landscape(
         boundary = [0.0]
 
     cf = ax.contourf(A, B, grid, levels=levels, cmap="RdBu_r", extend="both")
-    ax.contour(A, B, grid, levels=boundary, colors=["#c0392b"], linewidths=2.5)
-    fig.colorbar(cf, ax=ax)
-    ax.plot(0, 0, "k*", markersize=14, zorder=10)
+    ax.contour(A, B, grid, levels=boundary, colors=["#c0392b"], linewidths=1.5)
+    cbar = fig.colorbar(cf, ax=ax)
+    cbar.set_label(METRIC_LABELS.get(metric, metric))
+    ax.plot(0, 0, "k*", markersize=8, zorder=10)
     ax.set_xlabel(label_x)
     ax.set_ylabel(label_y)
-    ax.set_title(f"Robustness landscape ({metric}) {title_suffix}")
+    if title:
+        ax.set_title(title)
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, format="pdf")
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
     if show:
         plt.show()
     plt.close(fig)
@@ -515,14 +533,14 @@ def main():
 
     if args.mode == "random_dirs":
         d1, d2 = generate_random_directions(jr.key(args.dir_seed), theta_0, sizes)
-        label_x = "direction 1"
-        label_y = "direction 2"
+        label_x = r"$\epsilon_1$"
+        label_y = r"$\epsilon_2$"
     else:
         assert args.param_i < D and args.param_j < D, f"param indices must be < {D}"
         d1 = None
         d2 = None
-        label_x = names[args.param_i]
-        label_y = names[args.param_j]
+        label_x = rf"$\theta_{{{args.param_i}}}$ ({names[args.param_i]})"
+        label_y = rf"$\theta_{{{args.param_j}}}$ ({names[args.param_j]})"
 
     # --- Grid sweep ---
     robustness_grid = np.full((args.grid_size, args.grid_size), np.nan)
@@ -547,10 +565,8 @@ def main():
     pbar.close()
 
     # --- Plot ---
-    title_suffix = f"({args.system}, {args.model_type}"
-    if args.model_type == "buffer" and args.freeze_mlp:
-        title_suffix += ", nominal params only"
-    title_suffix += f", {D}D, {args.mode})"
+    system_names = {"nfc": "NFC", "hill": "Hill", "quadrotor": "Quadrotor"}
+    title = rf"Robustness landscape -- {system_names[args.system]} ({D}D)"
 
     plot_landscape(
         alphas,
@@ -559,7 +575,7 @@ def main():
         args.metric,
         label_x,
         label_y,
-        title_suffix,
+        title,
         args.output,
         args.show,
     )
