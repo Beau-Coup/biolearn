@@ -514,6 +514,7 @@ def run_one(key: jax.Array, args: Args):
     )
 
     all_losses = []
+    all_rhos = []
     n_points = args.n_samples
     n_boundary = args.boundary_samples
     n_importance = args.num_importance_samples
@@ -559,29 +560,36 @@ def run_one(key: jax.Array, args: Args):
                 )
 
             params, _ = eqx.partition(model, eqx.is_array)
-            return (key, params, opt_state, importance_buffer), loss
+            return (key, params, opt_state, importance_buffer), (loss, rhos)
 
         @eqx.filter_vmap(in_axes=(0, 0, 0, 0))
         def _train_horizon(key, params, opt_state, importance_buffer):
             init = (key, params, opt_state, importance_buffer)
-            (_, final_params, final_opt_state, final_buf), losses = jax.lax.scan(
-                _scan_step, init, jnp.arange(n_steps)
+            (_, final_params, final_opt_state, final_buf), (losses, all_rhos) = (
+                jax.lax.scan(_scan_step, init, jnp.arange(n_steps))
             )
-            return final_params, final_opt_state, final_buf, losses
+            return final_params, final_opt_state, final_buf, losses, all_rhos
 
         key, subkey = jr.split(key)
         keys = jr.split(subkey, args.num_instantiations)
-        ms, opt_states, importance_buffers, horizon_losses = _train_horizon(
-            keys, ms, opt_states, importance_buffers
+        ms, opt_states, importance_buffers, horizon_losses, horizon_rhos = (
+            _train_horizon(keys, ms, opt_states, importance_buffers)
         )
         all_losses.append(horizon_losses)
+        all_rhos.append(horizon_rhos)
 
     all_losses = jnp.concatenate(all_losses, axis=1)
+    # all_rhos: (num_instantiations, num_epochs, n_samples)
+    all_rhos = jnp.concatenate(all_rhos, axis=1)
 
     t_train = time.monotonic() - t_start
 
     # Save training curves
-    np.savez(run_dir / "training_curves.npz", losses=all_losses)
+    np.savez(
+        run_dir / "training_curves.npz",
+        losses=all_losses,
+        rhos=all_rhos,
+    )
 
     fig, ax = plt.subplots()
     ax.plot(np.arange(all_losses.shape[1]), all_losses.T)
