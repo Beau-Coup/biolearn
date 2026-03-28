@@ -1,4 +1,6 @@
-"""Visualize the robustness landscape of an NFC model over parameter space.
+"""Visualize the robustness landscape of a model over parameter space.
+
+Supports all system types: nfc, hill, quadrotor.
 
 Two visualization modes:
   - random_dirs: Li et al. 2018-style random normalized direction planes
@@ -6,15 +8,18 @@ Two visualization modes:
 
 Usage:
   uv run python -m scripts.plot_robustness_landscape --help
-  uv run python -m scripts.plot_robustness_landscape --grid-size 11 --n-test 8
+  uv run python -m scripts.plot_robustness_landscape --system nfc --grid-size 11 --n-test 8
+  uv run python -m scripts.plot_robustness_landscape --system hill --grid-size 5 --n-test 4
+  uv run python -m scripts.plot_robustness_landscape --system quadrotor --grid-size 5 --n-test 4
   uv run python -m scripts.plot_robustness_landscape --mode coord_slice --param-i 0 --param-j 6
   uv run python -m scripts.plot_robustness_landscape --model-type buffer --freeze-mlp
+  uv run python -m scripts.plot_robustness_landscape --checkpoint results/run/best_model.eqx
 """
 
 import os
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=4"
+os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=2"
 
 import jax
 
@@ -37,7 +42,11 @@ import tyro
 from tqdm import tqdm
 
 from biolearn.models.base import BioModel, SimulateConfig
+from biolearn.models.hill import BioGNN, BioGnnModel, EdgeType
 from biolearn.models.nfc import NFC, MoormanNFC
+from biolearn.models.quadrotor import QuadModel, Quadrotor
+from biolearn.specifications.hk25 import FastProduce
+from biolearn.specifications.quadrotor import HeightMaintain
 from biolearn.specifications.ss_classification import PhiXorFast
 
 # ---------------------------------------------------------------------------
@@ -211,59 +220,136 @@ def generate_random_directions(key, theta_0, sizes):
 
 
 # ---------------------------------------------------------------------------
+# Per-system configuration
+# ---------------------------------------------------------------------------
+
+HILL_GRAPH = [
+    (0, 1, EdgeType.Activation),  # x1 -> x2
+    (2, 3, EdgeType.Inhibition),  # x3 -| x4
+    (3, 0, EdgeType.Inhibition),  # x4 -| x1
+    (3, 1, EdgeType.Activation),  # x4 -> x2
+    (4, 1, EdgeType.Activation),  # x5 -> x2
+    (4, 2, EdgeType.Activation),  # x5 -> x3
+    (4, 5, EdgeType.Activation),  # x5 -> x6
+]
+
+
+def setup_system(system: str, key: jax.Array):
+    """Return (model, spec, traj_fn, sim_cfg, ts, low, high, is_nfc) for a system."""
+    if system == "nfc":
+        model = MoormanNFC(2, [2, 1], gamma=1000.0, k=0.8, key=key)
+        spec = PhiXorFast()
+        traj_fn = ss_to_traj_xor
+        sim_cfg = SimulateConfig(
+            to_ss=False,
+            stiff=True,
+            throw=False,
+            max_steps=int(3e4),
+            rtol=1e-4,
+            atol=1e-5,
+            max_stepsize=0.5,
+            progress_bar=False,
+        )
+        ts = jnp.arange(0.0, 20.0, 1.0)
+        low = jnp.array([0.1, 0.1])
+        high = jnp.array([0.9, 0.9])
+        is_nfc = True
+    elif system == "hill":
+        model = BioGnnModel(BioGNN(key, HILL_GRAPH, 2.0))
+        spec = FastProduce()
+        traj_fn = ss_to_traj_hill
+        sim_cfg = SimulateConfig(
+            to_ss=False,
+            stiff=True,
+            throw=False,
+            max_steps=int(2e4),
+            rtol=1e-3,
+            atol=1e-4,
+            max_stepsize=0.5,
+            progress_bar=False,
+        )
+        ts = jnp.arange(0.0, 15.0, 1.0)
+        low = jnp.array([0.0, 0.0, 0.01, 0.01, 0.99, 0.99])
+        high = jnp.array([0.2, 0.2, 0.04, 0.04, 1.0, 1.0])
+        is_nfc = False
+    elif system == "quadrotor":
+        model = QuadModel(Quadrotor(key))
+        spec = HeightMaintain()
+        traj_fn = ss_to_traj_q
+        sim_cfg = SimulateConfig(
+            to_ss=False,
+            stiff=False,
+            throw=False,
+            max_steps=int(3e4),
+            rtol=1e-3,
+            atol=1e-4,
+            max_stepsize=0.5,
+            progress_bar=False,
+        )
+        ts = jnp.arange(0.0, 5.0, 1.0)
+        low = jnp.array(
+            [-0.4, -0.4, -0.4, -0.4, -0.4, -0.4, 0.0, -0.02, 0.0, -0.02, 0.0, -0.02]
+        )
+        high = jnp.array(
+            [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.0, 0.02, 0.0, 0.02, 0.0, 0.02]
+        )
+        is_nfc = False
+    else:
+        raise ValueError(f"Unknown system: {system}")
+    return model, spec, traj_fn, sim_cfg, ts, low, high, is_nfc
+
+
+# ---------------------------------------------------------------------------
 # Robustness evaluation
 # ---------------------------------------------------------------------------
 
-SIM_CFG = SimulateConfig(
-    to_ss=False,
-    stiff=True,
-    throw=False,
-    max_steps=int(3e4),
-    rtol=1e-4,
-    atol=1e-5,
-    max_stepsize=0.5,
-    progress_bar=False,
-)
 
-TS = jnp.arange(0.0, 20.0, 1.0)
+def make_test_ics(
+    n_test: int, key: jax.Array, low: jax.Array, high: jax.Array, is_nfc: bool
+) -> jax.Array:
+    """Create test initial conditions.
 
-
-def make_test_ics(n_test: int) -> jax.Array:
-    """Create a grid of initial conditions in [0.1, 0.9]^2."""
-    xs = jnp.linspace(0.1, 0.9, n_test)
-    g1, g2 = jnp.meshgrid(xs, xs)
-    return jnp.stack([g1.ravel(), g2.ravel()], axis=-1)
+    For NFC: 2D meshgrid (n_test per axis, total = n_test^2).
+    For hill/quadrotor: random uniform sampling (total = n_test^2).
+    """
+    if is_nfc:
+        xs = jnp.linspace(low[0], high[0], n_test)
+        ys = jnp.linspace(low[1], high[1], n_test)
+        g1, g2 = jnp.meshgrid(xs, ys)
+        return jnp.stack([g1.ravel(), g2.ravel()], axis=-1)
+    else:
+        dim = low.shape[0]
+        return jr.uniform(key, (n_test**2, dim), minval=low, maxval=high)
 
 
 def ss_to_traj_xor(y_trace, x):
-    """Convert NFC output to (T, 3) trajectory for PhiXorFast.
-
-    Replicates train_scratch.py lines 275-279.
-    """
+    """Convert NFC output to (T, 3) trajectory for PhiXorFast."""
     y_traj = y_trace[..., -1, 0][..., None]  # (T, 1) — last node, first species
     x_traj = jnp.ones_like(y_traj) * x[None, :]  # (T, 2)
     return jnp.concatenate([x_traj, y_traj], axis=-1)  # (T, 3)
 
 
-def build_eval_fn(info, x_test, spec, is_buffer: bool):
+def ss_to_traj_hill(y_trace, x):
+    """Hill model trajectory is the state directly: (T, 6)."""
+    return y_trace
+
+
+def ss_to_traj_q(y_trace, _):
+    """Quadrotor trajectory extracts height and vertical rate: (T, 2)."""
+    return y_trace[..., 4:6]
+
+
+def build_eval_fn(info, x_test, spec, traj_fn, sim_cfg, ts):
     """Build a JIT-compiled function: flat_params -> (N,) robustness array."""
 
     @jax.jit
     def eval_rhos(flat_params):
         model = unflatten_params(flat_params, info)
-
-        if is_buffer:
-            sim = partial(model.simulate, ts=TS, config=SIM_CFG)
-        else:
-            sim = partial(model.simulate, ts=TS, config=SIM_CFG)
+        sim = partial(model.simulate, ts=ts, config=sim_cfg)
 
         def run_one(x0):
             y_trace, _ = sim(x=x0)
-            if is_buffer:
-                # BufferModel returns (T, n_nodes, n_species) same as NFC
-                traj = ss_to_traj_xor(y_trace, x0)
-            else:
-                traj = ss_to_traj_xor(y_trace, x0)
+            traj = traj_fn(y_trace, x0)
             rho = spec.evaluate(traj)
             return jnp.where(jnp.isfinite(rho), rho, -1.0)
 
@@ -275,11 +361,11 @@ def build_eval_fn(info, x_test, spec, is_buffer: bool):
 def aggregate(rhos, metric: str):
     """Aggregate per-IC robustness into a single scalar."""
     if metric == "sat_frac":
-        return float(jnp.mean(rhos > 0))
+        return jnp.mean(rhos > 0)
     elif metric == "mean":
-        return float(jnp.mean(rhos))
+        return jnp.mean(rhos)
     elif metric == "min":
-        return float(jnp.min(rhos))
+        return jnp.min(rhos)
     raise ValueError(f"Unknown metric: {metric}")
 
 
@@ -325,7 +411,7 @@ def plot_landscape(
     ax.set_title(f"Robustness landscape ({metric}) {title_suffix}")
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    fig.savefig(output_path, dpi=150, format="pdf")
     if show:
         plt.show()
     plt.close(fig)
@@ -339,8 +425,12 @@ def plot_landscape(
 
 @dataclass
 class PlotArgs:
+    system: Literal["nfc", "hill", "quadrotor"] = "nfc"
+    """System type to analyze."""
     seed: int = 42
     """Random seed for model initialization."""
+    checkpoint: str | None = None
+    """Path to .eqx checkpoint. Loads trained parameters instead of random init."""
     mode: Literal["random_dirs", "coord_slice"] = "random_dirs"
     """Visualization mode."""
     grid_size: int = 31
@@ -357,13 +447,13 @@ class PlotArgs:
     """IC grid points per axis (total ICs = n_test^2)."""
     metric: Literal["mean", "sat_frac", "min"] = "sat_frac"
     """Aggregation metric over initial conditions."""
-    model_type: Literal["nfc", "buffer"] = "nfc"
-    """Model type: bare NFC or BufferModel."""
+    model_type: Literal["nominal", "buffer"] = "nominal"
+    """Model type: bare nominal model or BufferModel wrapping it."""
     freeze_mlp: bool = False
-    """BufferModel only: sweep only NFC parameters, keep MLP fixed."""
+    """BufferModel only: sweep only nominal parameters, keep MLP fixed."""
     buffer_seed: int = 99
     """Seed for BufferModel MLP init."""
-    output: str = "figures/robustness_landscape.png"
+    output: str = "figures/robustness_landscape.pdf"
     """Output file path."""
     show: bool = False
     """Call plt.show()."""
@@ -374,24 +464,33 @@ def main():
     key = jr.key(args.seed)
     key, subkey = jr.split(key)
 
-    # --- Model setup (mirrors train_scratch.py "nfc" case) ---
-    nominal_model = MoormanNFC(2, [2, 1], gamma=1000.0, k=0.8, key=subkey)
-    spec = PhiXorFast()
+    # --- System setup ---
+    nominal_model, spec, traj_fn, sim_cfg, ts, low, high, is_nfc = setup_system(
+        args.system, subkey
+    )
 
-    if args.model_type == "buffer":
+    # --- Model setup (optionally wrap in BufferModel, optionally load checkpoint) ---
+    if args.checkpoint is not None:
+        if args.model_type == "buffer":
+            template = BufferModel(jr.key(args.buffer_seed), nominal_model)
+        else:
+            template = nominal_model
+        model = eqx.tree_deserialise_leaves(args.checkpoint, template)
+        print(f"Loaded checkpoint from {args.checkpoint}")
+    elif args.model_type == "buffer":
         model = BufferModel(jr.key(args.buffer_seed), nominal_model)
     else:
         model = nominal_model
 
     # --- Filter for parameter sweep ---
     if args.model_type == "buffer" and args.freeze_mlp:
-        # Only sweep NFC parameters
-        def nfc_filter(model):
+        # Only sweep nominal model parameters, keep MLP fixed
+        def nominal_filter(model):
             mask = jax.tree_util.tree_map(lambda _: False, model)
-            nfc_mask = jax.tree_util.tree_map(eqx.is_inexact_array, model.nominal_model)
-            return eqx.tree_at(lambda m: m.nominal_model, mask, nfc_mask)
+            nom_mask = jax.tree_util.tree_map(eqx.is_inexact_array, model.nominal_model)
+            return eqx.tree_at(lambda m: m.nominal_model, mask, nom_mask)
 
-        filter_fn = nfc_filter(model)
+        filter_fn = nominal_filter(model)
     else:
         filter_fn = eqx.is_inexact_array
 
@@ -403,12 +502,12 @@ def main():
     print(f"Parameter space dimension: {D}")
 
     # --- Test ICs ---
-    x_test = make_test_ics(args.n_test)
-    print(f"Test ICs: {x_test.shape[0]} points from [0.1, 0.9]^2")
+    key, subkey = jr.split(key)
+    x_test = make_test_ics(args.n_test, subkey, low, high, is_nfc)
+    print(f"Test ICs: {x_test.shape[0]} points, dim={x_test.shape[1]}")
 
     # --- Evaluation function ---
-    is_buffer = args.model_type == "buffer"
-    eval_fn = build_eval_fn(info, x_test, spec, is_buffer)
+    eval_fn = build_eval_fn(info, x_test, spec, traj_fn, sim_cfg, ts)
 
     # --- Grid setup ---
     alphas = np.linspace(-args.alpha_range, args.alpha_range, args.grid_size)
@@ -435,8 +534,9 @@ def main():
         if args.mode == "random_dirs":
             theta = theta_0 + alpha * d1 + betas[:, None] * d2  # pyright: ignore
         else:
-            theta = theta_0.at[args.param_i].set(theta_0[args.param_i] + alpha)
-            theta = theta.at[args.param_j].set(theta_0[args.param_j] + betas)
+            theta = jnp.tile(theta_0, (args.grid_size, 1))
+            theta = theta.at[:, args.param_i].set(theta_0[args.param_i] + alpha)
+            theta = theta.at[:, args.param_j].set(theta_0[args.param_j] + betas)
 
         try:
             rhos = jax.vmap(eval_fn)(theta)
@@ -447,9 +547,9 @@ def main():
     pbar.close()
 
     # --- Plot ---
-    title_suffix = f"({args.model_type}"
+    title_suffix = f"({args.system}, {args.model_type}"
     if args.model_type == "buffer" and args.freeze_mlp:
-        title_suffix += ", NFC params only"
+        title_suffix += ", nominal params only"
     title_suffix += f", {D}D, {args.mode})"
 
     plot_landscape(
