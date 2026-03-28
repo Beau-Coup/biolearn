@@ -224,7 +224,7 @@ def hill_sampler(
     n_boundary: int = 64,
 ) -> jax.Array:
     key, subkey = jr.split(key)
-    edge_samples = sample_hypercube_budget(subkey, low, high, n_boundary, max_k=2)
+    edge_samples = sample_hypercube_budget(subkey, low, high, n_boundary)
 
     inside_samples = jr.uniform(key, (n_samples, 6), minval=low, maxval=high)
     xs = jnp.concatenate([edge_samples, inside_samples])
