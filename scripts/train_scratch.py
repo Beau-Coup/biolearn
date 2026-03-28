@@ -202,15 +202,11 @@ def xor_sampler(
     key: jax.Array, low: jax.Array, high: jax.Array, n_samples: int, n_face: int = 2
 ) -> jax.Array:
     key, subkey = jr.split(key)
-    edge_points = jr.uniform(subkey, (n_face * 4,))
-    step = n_face
+    edge_samples = sample_hypercube_faces(subkey, low, high, n_per_face=n_face)
 
-    x0 = jnp.stack([jnp.zeros(step) + 0.1, edge_points[:step]], axis=-1)
-    x1 = jnp.stack([jnp.ones(step) * 0.9, edge_points[step : 2 * step]], axis=-1)
-    x2 = jnp.stack([edge_points[2 * step : 3 * step], 0.1 + jnp.zeros(step)], axis=-1)
-    x3 = jnp.stack([edge_points[3 * step :], 0.9 * jnp.ones(step)], axis=-1)
-
-    xs = jnp.concatenate([x0, x1, x2, x3, jr.uniform(key, (n_samples, 2))], axis=0)
+    xs = jnp.concatenate(
+        [edge_samples, jr.uniform(key, (n_samples, 2), minval=low, maxval=high)], axis=0
+    )
     return xs
 
 
@@ -229,7 +225,7 @@ def hill_sampler(
         n_per_face=n_per_face,
     )
 
-    inside_samples = jr.uniform(key, (n_samples, 6)) * (high - low) + (high + low) / 2.0
+    inside_samples = jr.uniform(key, (n_samples, 6), minval=low, maxval=high)
     xs = jnp.concatenate([edge_samples, inside_samples])
 
     return xs
@@ -240,7 +236,7 @@ def run_one(key: jax.Array, args: Args):
     t_start = time.monotonic()
 
     kd = jr.key_data(key)
-    run_id = f"{args.system}_{kd[0]:x}{kd[1]:x}"
+    run_id = f"{args.system}_{kd[0]:x}{kd[1]:x}_{time.time()}"
     run_dir = Path("results") / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -431,9 +427,10 @@ def run_one(key: jax.Array, args: Args):
     # Test the models to find the top-k parameter vectors to optimize.
     losses = jnp.zeros(len(models))
     model_pbar = tqdm(enumerate(models), total=len(models), desc="Selecting models")
+    xs = sampler(key, low, high, args.n_samples, args.boundary_samples)
+
     for i, model in model_pbar:
         key, subkey = jr.split(key)
-        xs = sampler(key, low, high, args.n_samples, args.boundary_samples)
 
         loss = nominal_loss(model, xs, ts)
         losses = losses.at[i].set(loss)
