@@ -183,7 +183,7 @@ def quadrotor_sampler(
     l = low[jnp.array(nonzero)]
     h = high[jnp.array(nonzero)]
     key, subkey = jr.split(key)
-    edge_samples = sample_hypercube_faces(subkey, l, h, n_per_face=n_per_face)
+    edge_samples = sample_hypercube_faces(subkey, l, h, n_per_face=n_per_face, max_k=2)
 
     xs = jnp.concatenate(
         [
@@ -407,20 +407,33 @@ def run_one(key: jax.Array, args: Args):
         case "exponential":
             group_loss = lambda rhos, _: jnp.exp(-rhos).mean()
 
+    def _sim_and_eval(sim, x0_chunk):
+        """Simulate and evaluate a chunk of initial conditions."""
+        y_traces, _ = jax.vmap(sim)(x0_chunk)
+        safe_traj = ss_to_traj(y_traces, x0_chunk)
+        rhos = jax.vmap(spec.evaluate)(safe_traj)
+        return rhos
+
+    def _chunked_sim_eval(sim, x0):
+        """Process samples in chunks to limit peak memory."""
+        bs = args.batch_size
+        n = x0.shape[0]
+        n_padded = ((n - 1) // bs + 1) * bs
+        x0_padded = jnp.concatenate([x0, jnp.zeros((n_padded - n, x0.shape[1]))])
+        x0_chunks = x0_padded.reshape(-1, bs, x0.shape[1])
+        all_rhos = jax.lax.map(partial(_sim_and_eval, sim), x0_chunks)
+        return all_rhos.reshape(-1)[:n]
+
     @eqx.filter_value_and_grad(has_aux=True)
     def grad_loss(model, x0, ts, reg=args.regularizer):
         sim = partial(model.simulate, ts=ts, config=sim_cfg)
-        y_traces, _ = jax.vmap(sim)(x0)
-        safe_traj = ss_to_traj(y_traces, x0)
-        rhos = jax.vmap(spec.evaluate)(safe_traj)
+        rhos = _chunked_sim_eval(sim, x0)
         task_loss = group_loss(rhos, model.slack)
         return task_loss + reg * residual_l2(model), rhos
 
     def nominal_loss(model, x0, ts, reg=args.regularizer):
         sim = partial(model.simulate, ts=ts, config=sim_cfg)
-        y_traces, _ = jax.vmap(sim)(x0)
-        safe_traj = ss_to_traj(y_traces, x0)
-        rhos = jax.vmap(spec.evaluate)(safe_traj)
+        rhos = _chunked_sim_eval(sim, x0)
         task_loss = group_loss(rhos, jnp.array(0.0))
         return task_loss
 
@@ -568,9 +581,7 @@ def run_one(key: jax.Array, args: Args):
         model_params_i = jax.tree.map(lambda x: x[i], ms)  # pyright: ignore
         model_i = eqx.combine(model_params_i, static)
         sim = partial(model_i.nominal_model.simulate, ts=ts, config=sim_cfg)
-        y_traces, _ = jax.vmap(sim)(x_test)
-        traj = ss_to_traj(y_traces, x_test)
-        rhos_i = jax.vmap(spec.evaluate)(traj)
+        rhos_i = _chunked_sim_eval(sim, x_test)
         all_rhos.append(rhos_i)
 
         weight_filter = list(
@@ -669,6 +680,8 @@ class Args:
     num_initializations: int = 10
     """The number of parameters to test before starting to optimize."""
     num_importance_samples: int = 32
+    batch_size: int = 512
+    """Max samples to simulate in parallel. Limits peak memory."""
 
 
 def main():
