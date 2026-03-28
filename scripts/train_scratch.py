@@ -7,6 +7,7 @@ os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=2"
 
 import json
 import math
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 from functools import partial
@@ -37,7 +38,7 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from biolearn.models.base import BioModel, SimulateConfig
-from biolearn.utils import sample_hypercube_faces
+from biolearn.utils import sample_hypercube_budget
 
 
 class SamplingBuffer(eqx.Module):
@@ -177,13 +178,13 @@ def quadrotor_sampler(
     low: jax.Array,
     high: jax.Array,
     n_samples: int,
-    n_per_face: int = 1,
+    n_boundary: int = 64,
 ) -> jax.Array:
     nonzero = [0, 1, 2, 3, 4, 5, 7, 9, 11]
     l = low[jnp.array(nonzero)]
     h = high[jnp.array(nonzero)]
     key, subkey = jr.split(key)
-    edge_samples = sample_hypercube_faces(subkey, l, h, n_per_face=n_per_face, max_k=2)
+    edge_samples = sample_hypercube_budget(subkey, l, h, n_boundary, max_k=2)
 
     xs = jnp.concatenate(
         [
@@ -199,10 +200,14 @@ def quadrotor_sampler(
 
 
 def xor_sampler(
-    key: jax.Array, low: jax.Array, high: jax.Array, n_samples: int, n_face: int = 2
+    key: jax.Array,
+    low: jax.Array,
+    high: jax.Array,
+    n_samples: int,
+    n_boundary: int = 32,
 ) -> jax.Array:
     key, subkey = jr.split(key)
-    edge_samples = sample_hypercube_faces(subkey, low, high, n_per_face=n_face)
+    edge_samples = sample_hypercube_budget(subkey, low, high, n_boundary)
 
     xs = jnp.concatenate(
         [edge_samples, jr.uniform(key, (n_samples, 2), minval=low, maxval=high)], axis=0
@@ -215,15 +220,10 @@ def hill_sampler(
     low: jax.Array,
     high: jax.Array,
     n_samples: int,
-    n_per_face: int = 1,
+    n_boundary: int = 64,
 ) -> jax.Array:
     key, subkey = jr.split(key)
-    edge_samples = sample_hypercube_faces(
-        subkey,
-        low,
-        high,
-        n_per_face=n_per_face,
-    )
+    edge_samples = sample_hypercube_budget(subkey, low, high, n_boundary, max_k=2)
 
     inside_samples = jr.uniform(key, (n_samples, 6), minval=low, maxval=high)
     xs = jnp.concatenate([edge_samples, inside_samples])
@@ -235,13 +235,21 @@ def run_one(key: jax.Array, args: Args):
     key, subkey = jr.split(key)
     t_start = time.monotonic()
 
-    kd = jr.key_data(key)
-    run_id = f"{args.system}_{kd[0]:x}{kd[1]:x}_{time.time()}"
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], text=True
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        commit = "unknown"
+
+    run_id = f"{args.system}_{commit}_{time.time()}"
     run_dir = Path("results") / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    args_dict = asdict(args)
+    args_dict["commit"] = commit
     with open(run_dir / "args.json", "w") as f:
-        json.dump(asdict(args), f, indent=2)
+        json.dump(args_dict, f, indent=2)
 
     model_keys = jr.split(subkey, args.num_initializations)
 
@@ -254,10 +262,9 @@ def run_one(key: jax.Array, args: Args):
                 to_ss=False,
                 stiff=False,
                 throw=True,
-                max_steps=2048,
+                max_steps=int(1e6),
                 rtol=1e-3,
                 atol=1e-4,
-                max_stepsize=0.5,
                 progress_bar=False,
             )
 
@@ -413,16 +420,6 @@ def run_one(key: jax.Array, args: Args):
         safe_traj = ss_to_traj(y_traces, x0)
         rhos = jax.vmap(spec.evaluate)(safe_traj)
         return rhos
-
-    def _chunked_sim_eval(sim, x0):
-        """Process samples in chunks to limit peak memory (evaluation only)."""
-        bs = args.batch_size
-        n = x0.shape[0]
-        n_padded = ((n - 1) // bs + 1) * bs
-        x0_padded = jnp.concatenate([x0, jnp.zeros((n_padded - n, x0.shape[1]))])
-        x0_chunks = x0_padded.reshape(-1, bs, x0.shape[1])
-        all_rhos = jax.lax.map(partial(_sim_and_eval, sim), x0_chunks)
-        return all_rhos.reshape(-1)[:n]
 
     @eqx.filter_value_and_grad(has_aux=True)
     def grad_loss(model, x0, ts, reg=args.regularizer):
@@ -582,7 +579,7 @@ def run_one(key: jax.Array, args: Args):
     @eqx.filter_jit
     def _eval_model(model, x_test, ts):
         sim = partial(model.nominal_model.simulate, ts=ts, config=sim_cfg)
-        return _chunked_sim_eval(sim, x_test)
+        return _sim_and_eval(sim, x_test)
 
     all_rhos = []
     for i in range(args.num_instantiations):
@@ -680,15 +677,13 @@ class Args:
     """Whether or not to do pseudo-importance sampling."""
     n_samples: int = 256
     """The batch size, or number of samples to take for the integral estimation."""
-    boundary_samples: int = 2
-    """The number of samples to take on each domain boundary."""
+    boundary_samples: int = 64
+    """Total number of boundary points to sample per batch."""
     num_instantiations: int = 1
     """The number of parameter initializations to optimize in parallel."""
     num_initializations: int = 10
     """The number of parameters to test before starting to optimize."""
     num_importance_samples: int = 32
-    batch_size: int = 128
-    """Max samples to simulate in parallel. Limits peak memory."""
 
 
 def main():

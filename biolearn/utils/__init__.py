@@ -1,2 +1,2 @@
-from .sampling import sample_hypercube_faces
+from .sampling import sample_hypercube_budget, sample_hypercube_faces
 from .trainer import EarlyStopper
