@@ -265,10 +265,11 @@ def draw_spec_overlay_hill(axes, ts):
 
 
 def draw_spec_overlay_laub(axes, ts):
-    # x4 (axes[2]): must stay below 0.4; trigger at 3.0
-    axes[2].axhline(0.4, color="red", linestyle="--", linewidth=0.6, alpha=0.7)
-    axes[2].axhspan(0.0, 0.4, alpha=0.04, color="green")
+    # x4 (axes[2]): must stay below 4.5; decay trigger at 3.0
+    axes[2].axhline(4.5, color="red", linestyle="--", linewidth=0.6, alpha=0.7)
     axes[2].axhline(3.0, color="orange", linestyle="--", linewidth=0.5, alpha=0.5)
+    axes[2].text(ts[-1] * 0.02, 4.55, r"$x_4 < 4.5$", fontsize=5, color="red", alpha=0.7)
+    axes[2].text(ts[-1] * 0.02, 3.05, r"decay trigger", fontsize=5, color="orange", alpha=0.5)
 
 
 # ---------------------------------------------------------------------------
