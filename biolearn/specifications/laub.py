@@ -16,7 +16,7 @@ class StableConverge(BaseSpec):
     ):
         self.semantics = get_semantics(semantics, dgmsr_p, smooth_temperature)
 
-        x4_small = Predicate("x4<0.4", fn=lambda sig, t: 0.4 - sig[t, 3]).always(
+        x4_small = Predicate("x4<4.5", fn=lambda sig, t: 4.5 - sig[t, 3]).always(
             Interval(0, 20)
         )
 
