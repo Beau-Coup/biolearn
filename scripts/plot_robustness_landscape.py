@@ -1,6 +1,6 @@
 """Visualize the robustness landscape of a model over parameter space.
 
-Supports all system types: nfc, hill, quadrotor.
+Supports all system types: nfc, hill, quadrotor, laub.
 
 Two visualization modes:
   - random_dirs: Li et al. 2018-style random normalized direction planes
@@ -43,9 +43,11 @@ from tqdm import tqdm
 
 from biolearn.models.base import BioModel, SimulateConfig
 from biolearn.models.hill import BioGNN, BioGnnModel, EdgeType
+from biolearn.models.laub import LLModel, LaubLoomis
 from biolearn.models.nfc import NFC, MoormanNFC
 from biolearn.models.quadrotor import QuadModel, Quadrotor
 from biolearn.specifications.hk25 import FastProduce
+from biolearn.specifications.laub import StableConverge
 from biolearn.specifications.quadrotor import HeightMaintain
 from biolearn.specifications.ss_classification import PhiXorFast
 
@@ -294,6 +296,25 @@ def setup_system(system: str, key: jax.Array):
             [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.0, 0.02, 0.0, 0.02, 0.0, 0.02]
         )
         is_nfc = False
+    elif system == "laub":
+        model = LLModel(LaubLoomis(key))
+        spec = StableConverge()
+        traj_fn = ss_to_traj_laub
+        sim_cfg = SimulateConfig(
+            to_ss=False,
+            stiff=True,
+            throw=False,
+            max_steps=4096,
+            rtol=1e-3,
+            atol=1e-4,
+            max_stepsize=0.5,
+            progress_bar=False,
+        )
+        ts = jnp.arange(0.0, 20.0, 0.5)
+        center = jnp.array([1.2, 1.05, 1.5, 2.4, 1.0, 0.1, 0.45])
+        low = center - 0.1
+        high = center + 0.1
+        is_nfc = False
     else:
         raise ValueError(f"Unknown system: {system}")
     return model, spec, traj_fn, sim_cfg, ts, low, high, is_nfc
@@ -337,6 +358,11 @@ def ss_to_traj_hill(y_trace, x):
 def ss_to_traj_q(y_trace, _):
     """Quadrotor trajectory extracts height and vertical rate: (T, 2)."""
     return y_trace[..., 4:6]
+
+
+def ss_to_traj_laub(y_trace, _):
+    """Laub-Loomis trajectory is the full 7-D state."""
+    return y_trace
 
 
 def build_eval_fn(info, x_test, spec, traj_fn, sim_cfg, ts):
@@ -443,7 +469,7 @@ def plot_landscape(
 
 @dataclass
 class PlotArgs:
-    system: Literal["nfc", "hill", "quadrotor"] = "nfc"
+    system: Literal["nfc", "hill", "quadrotor", "laub"] = "nfc"
     """System type to analyze."""
     seed: int = 42
     """Random seed for model initialization."""
@@ -565,7 +591,7 @@ def main():
     pbar.close()
 
     # --- Plot ---
-    system_names = {"nfc": "NFC", "hill": "Hill", "quadrotor": "Quadrotor"}
+    system_names = {"nfc": "NFC", "hill": "Hill", "quadrotor": "Quadrotor", "laub": "Laub-Loomis"}
     title = rf"Robustness landscape -- {system_names[args.system]} ({D}D)"
 
     plot_landscape(

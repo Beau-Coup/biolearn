@@ -417,7 +417,7 @@ def run_one(key: jax.Array, args: Args):
                 *[make_buffer(6, 1024) for _ in range(args.num_instantiations)],
             )
 
-            t_final = 15.0
+            t_final = 25.0
             ts = jnp.arange(0.0, t_final, 1.0)
 
             def ss_to_traj_hill(y_trace, x):
@@ -577,6 +577,7 @@ def run_one(key: jax.Array, args: Args):
 
     all_losses = []
     all_rhos = []
+    all_res_norms = []
     n_points = args.n_samples
     n_boundary = args.boundary_samples
     n_importance = args.num_importance_samples
@@ -621,28 +622,30 @@ def run_one(key: jax.Array, args: Args):
                     importance_buffer, jax.lax.stop_gradient(xs), failed
                 )
 
+            res_norm = residual_l2(model)
             params, _ = eqx.partition(model, eqx.is_array)
-            return (key, params, opt_state, importance_buffer), (loss, rhos)
+            return (key, params, opt_state, importance_buffer), (loss, rhos, res_norm)
 
         @eqx.filter_vmap(in_axes=(0, 0, 0, 0))
         def _train_horizon(key, params, opt_state, importance_buffer):
             init = (key, params, opt_state, importance_buffer)
-            (_, final_params, final_opt_state, final_buf), (losses, all_rhos) = (
+            (_, final_params, final_opt_state, final_buf), (losses, all_rhos, res_norms) = (
                 jax.lax.scan(_scan_step, init, jnp.arange(n_steps))
             )
-            return final_params, final_opt_state, final_buf, losses, all_rhos
+            return final_params, final_opt_state, final_buf, losses, all_rhos, res_norms
 
         key, subkey = jr.split(key)
         keys = jr.split(subkey, args.num_instantiations)
-        ms, opt_states, importance_buffers, horizon_losses, horizon_rhos = (
+        ms, opt_states, importance_buffers, horizon_losses, horizon_rhos, horizon_res_norms = (
             _train_horizon(keys, ms, opt_states, importance_buffers)
         )
         all_losses.append(horizon_losses)
         all_rhos.append(horizon_rhos)
+        all_res_norms.append(horizon_res_norms)
 
     all_losses = jnp.concatenate(all_losses, axis=1)
-    # all_rhos: (num_instantiations, num_epochs, n_samples)
     all_rhos = jnp.concatenate(all_rhos, axis=1)
+    all_res_norms = jnp.concatenate(all_res_norms, axis=1)
 
     t_train = time.monotonic() - t_start
 
@@ -651,6 +654,7 @@ def run_one(key: jax.Array, args: Args):
         run_dir / "training_curves.npz",
         losses=all_losses,
         rhos=all_rhos,
+        res_norms=all_res_norms,
     )
 
     fig, ax = plt.subplots()

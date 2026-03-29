@@ -39,9 +39,11 @@ import tyro
 
 from biolearn.models.base import BioModel, SimulateConfig
 from biolearn.models.hill import BioGNN, BioGnnModel, EdgeType
+from biolearn.models.laub import LLModel, LaubLoomis
 from biolearn.models.nfc import NFC, MoormanNFC
 from biolearn.models.quadrotor import QuadModel, Quadrotor
 from biolearn.specifications.hk25 import FastProduce
+from biolearn.specifications.laub import StableConverge
 from biolearn.specifications.quadrotor import HeightMaintain
 from biolearn.specifications.ss_classification import PhiXorFast
 
@@ -177,6 +179,18 @@ def setup_system(system: str, key: jax.Array):
         high = jnp.array([0.4, 0.4, 0.4, 0.4, 0.4, 0.4,
                            0.0, 0.02, 0.0, 0.02, 0.0, 0.02])
         is_nfc = False
+    elif system == "laub":
+        model = LLModel(LaubLoomis(key))
+        spec = StableConverge()
+        sim_cfg = SimulateConfig(
+            to_ss=False, stiff=True, throw=False, max_steps=4096,
+            rtol=1e-3, atol=1e-4, max_stepsize=0.5, progress_bar=False,
+        )
+        ts = jnp.arange(0.0, 20.0, 0.5)
+        center = jnp.array([1.2, 1.05, 1.5, 2.4, 1.0, 0.1, 0.45])
+        low = center - 0.1
+        high = center + 0.1
+        is_nfc = False
     else:
         raise ValueError(f"Unknown system: {system}")
     return model, spec, sim_cfg, ts, low, high, is_nfc
@@ -201,7 +215,16 @@ def ss_to_traj_q(y_trace, _):
     return y_trace[..., 4:6]
 
 
-TRAJ_FNS = {"nfc": ss_to_traj_xor, "hill": ss_to_traj_hill, "quadrotor": ss_to_traj_q}
+def ss_to_traj_laub(y_trace, x):
+    return y_trace
+
+
+TRAJ_FNS = {
+    "nfc": ss_to_traj_xor,
+    "hill": ss_to_traj_hill,
+    "quadrotor": ss_to_traj_q,
+    "laub": ss_to_traj_laub,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +262,13 @@ def draw_spec_overlay_hill(axes, ts):
             for val in thresholds[i]:
                 axes[i].axhline(val, color="red", linestyle="--",
                                 linewidth=0.5, alpha=0.7)
+
+
+def draw_spec_overlay_laub(axes, ts):
+    # x4 (axes[2]): must stay below 0.4; trigger at 3.0
+    axes[2].axhline(0.4, color="red", linestyle="--", linewidth=0.6, alpha=0.7)
+    axes[2].axhspan(0.0, 0.4, alpha=0.04, color="green")
+    axes[2].axhline(3.0, color="orange", linestyle="--", linewidth=0.5, alpha=0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +326,25 @@ def plot_hill(ts, all_traces, all_ics, rhos, cmap, norm):
     return fig, list(axes)
 
 
-PLOT_FNS = {"nfc": plot_nfc, "hill": plot_hill, "quadrotor": plot_quadrotor}
+def plot_laub(ts, all_traces, all_ics, rhos, cmap, norm):
+    """Plot Laub-Loomis x1, x3, x4 (three constrained states)."""
+    fig, axes = plt.subplots(3, 1, figsize=(3.5, 4.5), sharex=True)
+    state_labels = [r"$x_1$", r"$x_3$", r"$x_4$"]
+    state_indices = [0, 2, 3]
+    for i in range(len(all_traces)):
+        y_trace = all_traces[i]
+        color = cmap(norm(float(rhos[i])))
+        for j, si in enumerate(state_indices):
+            axes[j].plot(np.array(ts), np.array(y_trace[:, si]),
+                         color=color, alpha=0.6, linewidth=0.5)
+    for j in range(3):
+        axes[j].set_ylabel(state_labels[j])
+    axes[-1].set_xlabel("Time (s)")
+    draw_spec_overlay_laub(axes, ts)
+    return fig, list(axes)
+
+
+PLOT_FNS = {"nfc": plot_nfc, "hill": plot_hill, "quadrotor": plot_quadrotor, "laub": plot_laub}
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +354,7 @@ PLOT_FNS = {"nfc": plot_nfc, "hill": plot_hill, "quadrotor": plot_quadrotor}
 
 @dataclass
 class Args:
-    system: Literal["nfc", "hill", "quadrotor"] = "nfc"
+    system: Literal["nfc", "hill", "quadrotor", "laub"] = "nfc"
     """System type."""
     seed: int = 42
     """Random seed."""
