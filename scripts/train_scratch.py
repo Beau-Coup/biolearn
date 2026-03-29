@@ -2,6 +2,9 @@
 
 import os
 
+from biolearn.models.laub import LaubLoomis, LLModel
+from biolearn.specifications.laub import StableConverge
+
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
 os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=2"
 
@@ -232,6 +235,22 @@ def hill_sampler(
     return xs
 
 
+def laub_sampler(
+    key: jax.Array,
+    low: jax.Array,
+    high: jax.Array,
+    n_samples: int,
+    n_boundary: int = 64,
+) -> jax.Array:
+    key, subkey = jr.split(key)
+    edge_samples = sample_hypercube_budget(subkey, low, high, n_boundary)
+
+    inside_samples = jr.uniform(key, (n_samples, 7), minval=low, maxval=high)
+    xs = jnp.concatenate([edge_samples, inside_samples])
+
+    return xs
+
+
 def run_one(key: jax.Array, args: Args):
     key, subkey = jr.split(key)
     t_start = time.monotonic()
@@ -415,6 +434,49 @@ def run_one(key: jax.Array, args: Args):
 
             t_horizons = [t_final]
             sampler = hill_sampler
+        case "laub":
+            models = [LLModel(LaubLoomis(k)) for k in model_keys]
+
+            spec = StableConverge()
+
+            sim_cfg = SimulateConfig(
+                to_ss=False,
+                stiff=True,
+                throw=True,
+                max_steps=4096,
+                rtol=1e-3,
+                atol=1e-4,
+                max_stepsize=0.5,
+                progress_bar=False,
+            )
+
+            importance_buffers = jax.tree.map(
+                lambda *bs: jnp.stack(bs),
+                *[
+                    make_buffer(models[0].nominal.shape, 1024)
+                    for _ in range(args.num_instantiations)
+                ],
+            )
+
+            t_final = 20.0
+            ts = jnp.arange(0.0, t_final, 1.0)
+
+            def ss_to_traj_laub(y_trace, x):
+                return y_trace
+
+            ss_to_traj = ss_to_traj_laub
+
+            center = jnp.array([1.2, 1.05, 1.5, 2.4, 1, 0.1, 0.45])
+            width = 0.1
+            low = jnp.zeros(models[0].nominal.shape) - width + center
+            high = jnp.zeros_like(low) + width + center
+
+            xs = jnp.linspace(low, high, 6)
+            xs = jnp.meshgrid(*xs.T)
+            x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
+
+            t_horizons = [t_final]
+            sampler = laub_sampler
 
     match args.loss:
         case "relu":
@@ -691,7 +753,7 @@ class Args:
     """Learning rate decay interval."""
     runs: int = 3
     """Number of seeds to try out."""
-    system: Literal["nfc", "quadrotor", "hill"] = "quadrotor"
+    system: Literal["nfc", "quadrotor", "hill", "laub"] = "quadrotor"
     """The system to test."""
     regularizer: float = 1e-5
     """The starting regularization on the l2 norm of the MLP. Interpolated exponentially."""

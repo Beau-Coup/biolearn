@@ -20,3 +20,17 @@ Same
 
 ## After fixing stuff
 `uv run scripts/train_scratch.py --system quadrotor --boundary-samples 128 --regularizer 1e-1 --final-reg 1e-1 --importance-sample --loss slackrelu --lr 5e-2 --num-epochs 300 --n-samples 512 --num-initializations 128 --num-instantiations 16 --runs 1`
+
+### Figures / paper:
+`uv run scripts/train_scratch.py --system quadrotor --boundary-samples 64 --regularizer 1e-1 --final-reg 1e-1 --importance-sample --loss slackrelu --lr 5e-2 --num-epochs 300 --n-samples 256 --num-initializations 128 --num-instantiations 16 --runs 1`
+
+Model 12 has best robustness
+
+#### Result IDs
+
+ReLU:quadrotor_83813b1_98e11cb1 
+SlackReLU: quadrotor_83813b1_acb8a235
+LeakyReLU: quadrotor_83813b1_b33e43bd
+
+
+
