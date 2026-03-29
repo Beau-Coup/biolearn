@@ -26,6 +26,6 @@ class HeightMaintain(BaseSpec):
             Interval(3)
         ) & Predicate("hdot<0.1", fn=lambda sig, t: 0.1 - sig[t, 1]).always(Interval(3))
 
-        full = min_height & max_height
+        full = min_height & max_height & settle_vel
 
         self.spec = full
