@@ -14,7 +14,7 @@ def _parameter_transform(x: jax.Array) -> jax.Array:
 
     # return jax.nn.sigmoid(x) * (1 - 0.001) + 0.001
     return jnp.clip(x, 0.001, 1)
-    return 0.5 * (jnp.tanh(x) + 1) * (1 - 0.001) + 0.001
+    # return 0.5 * (jnp.tanh(4.0 * (x - 0.5)) + 1) * (1 - 0.001) + 0.001
 
 
 class EdgeType(eqx.Enumeration):
@@ -182,15 +182,9 @@ class BioGNN(eqx.Module):
         self.agg_indices = agg_indices
 
         k1, k2, k3 = jr.split(key, 3)
-        self.log_decay = jr.uniform(
-            k1, n_nodes, minval=jnp.log(0.001), maxval=jnp.log(1.0)
-        )
-        self.log_growth = jr.uniform(
-            k2, n_nodes, minval=jnp.log(0.001), maxval=jnp.log(1.0)
-        )
-        self.log_nu = jr.uniform(
-            k3, n_nodes, minval=jnp.log(0.001), maxval=jnp.log(1.0)
-        )
+        self.log_decay = jr.uniform(k1, n_nodes, minval=0.001, maxval=1.0)
+        self.log_growth = jr.uniform(k2, n_nodes, minval=0.001, maxval=1.0)
+        self.log_nu = jr.uniform(k3, n_nodes, minval=0.001, maxval=1.0)
 
     def _aggregator_sum(self, x: jax.Array) -> jax.Array:
         out = jnp.zeros_like(x)
@@ -208,8 +202,8 @@ class BioGNN(eqx.Module):
         return (
             _parameter_transform(self.log_nu) * dx
             - _parameter_transform(self.log_decay) * x
-            # + jnp.exp(self.log_growth)
-            + jnp.array([0.5, 0.5, 0, 0, 0, 0])
+            + _parameter_transform(self.log_growth) * x
+            # + jnp.array([0.5, 0.5, 0, 0, 0, 0])
         )
 
     @property
