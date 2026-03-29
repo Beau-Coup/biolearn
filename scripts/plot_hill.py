@@ -30,26 +30,26 @@ model = BioGnnModel(gnn)
 
 # ── Load trained parameters ─────────────────────────────────────────
 trained_params = [
-    jnp.array([1.44625236], dtype=jnp.float64),
+    jnp.array([0.09494472], dtype=jnp.float64),
     jnp.array([], dtype=jnp.float64),
     jnp.array([], dtype=jnp.float64),
-    jnp.array([0.49752798, 0.51152929, 0.72761438], dtype=jnp.float64),
+    jnp.array([0.21040559, 0.91751554, 0.36848164], dtype=jnp.float64),
     jnp.array([], dtype=jnp.float64),
-    jnp.array([0.77624723], dtype=jnp.float64),
-    jnp.array([0.7888825], dtype=jnp.float64),
+    jnp.array([0.43391442], dtype=jnp.float64),
+    jnp.array([0.39582614], dtype=jnp.float64),
     jnp.array([], dtype=jnp.float64),
     jnp.array([], dtype=jnp.float64),
-    jnp.array([0.99652738], dtype=jnp.float64),
+    jnp.array([0.08597344], dtype=jnp.float64),
     jnp.array(
-        [1.03080479, 1.39763618, 0.62764375, 1.31451149, 0.88295921, 0.73878105],
+        [0.82392755, 0.45774357, 0.67599819, 0.39003168, 0.55302649, 0.92344576],
         dtype=jnp.float64,
     ),
     jnp.array(
-        [0.66920203, 0.10839958, 0.20379893, 0.45147143, 0.52794752, 0.8918487],
+        [0.38168326, 0.12809297, 0.45018981, 0.02895972, 0.18048485, 0.70098302],
         dtype=jnp.float64,
     ),
     jnp.array(
-        [-0.3121208, 0.43119083, -0.18248559, -0.01214027, 0.05805096, 0.72434505],
+        [0.41958752, 0.15026935, 0.56776042, 0.09449914, 0.63742486, 0.21226839],
         dtype=jnp.float64,
     ),
 ]

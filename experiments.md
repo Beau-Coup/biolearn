@@ -34,3 +34,10 @@ LeakyReLU: quadrotor_83813b1_b33e43bd
 
 
 
+
+## Hill Fixed
+I added back a_u as a parameter to be trained
+
+`uv run scripts/train_scratch.py --system hill --boundary-samples 64 --regularizer 1e-1 --final-reg 1e-1 --importance-sample --loss relu  --lr 2e-3 --num-epochs 1000 --n-samples 128 --num-initializations 512 --num-instantiations 8 --runs 1`
+
+Run: `hill_00a4b07_7d40d792`

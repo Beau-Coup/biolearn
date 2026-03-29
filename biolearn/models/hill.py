@@ -202,8 +202,8 @@ class BioGNN(eqx.Module):
         return (
             _parameter_transform(self.log_nu) * dx
             - _parameter_transform(self.log_decay) * x
-            + _parameter_transform(self.log_growth) * x
-            # + jnp.array([0.5, 0.5, 0, 0, 0, 0])
+            + _parameter_transform(self.log_growth)
+            + jnp.array([0.5, 0.5, 0, 0, 0, 0])
         )
 
     @property

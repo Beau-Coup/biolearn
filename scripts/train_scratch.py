@@ -425,10 +425,10 @@ def run_one(key: jax.Array, args: Args):
 
             ss_to_traj = ss_to_traj_hill
 
-            low = jnp.array([0.0, 0.0, 0.01, 0.01, 0.99, 0.99])
+            low = jnp.array([0.0, 0.0, 0.00, 0.0, 0.98, 0.98])
             high = jnp.array([0.2, 0.2, 0.04, 0.04, 1.0, 1.0])
 
-            xs = jnp.linspace(low, high, 10)
+            xs = jnp.linspace(low, high, 6)
             xs = jnp.meshgrid(*xs.T)
             x_test = jnp.stack([x.flatten() for x in xs], axis=-1)
 
