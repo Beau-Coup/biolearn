@@ -38,12 +38,16 @@ LeakyReLU: quadrotor_83813b1_b33e43bd
 ## Hill Fixed
 I added back a_u as a parameter to be trained
 
-`uv run scripts/train_scratch.py --system hill --boundary-samples 64 --regularizer 1e-1 --final-reg 1e-1 --importance-sample --loss relu  --lr 2e-3 --num-epochs 1000 --n-samples 128 --num-initializations 512 --num-instantiations 8 --runs 1`
+`uv run scripts/train_scratch.py --system hill --boundary-samples 64 --regularizer 1e-1 --final-reg 1e-1 --importance-sample --loss slackrelu  --lr 5e-3 --num-epochs 500 --n-samples 128 --num-initializations 128 --num-instantiations 12 --runs 1`
 
-Run: `hill_00a4b07_7d40d792`
+`uv run scripts/train_scratch.py --system hill --boundary-samples 64 --regularizer 1e-1 --final-reg 1e-1 --no-importance-sample --loss slackrelu  --lr 5e-3 --num-epochs 500 --n-samples 128 --num-initializations 128 --num-instantiations 12 --runs 1`
 
+`uv run scripts/train_scratch.py --system hill --boundary-samples 64 --regularizer 1e2 --final-reg 1e2 --importance-sample --loss slackrelu  --lr 5e-3 --num-epochs 500 --n-samples 128 --num-initializations 128 --num-instantiations 12 --runs 1`
+
+In order: 
 
 ## Laub Loomis
 `uv run scripts/train_scratch.py --system laub --boundary-samples 64 --regularizer 1e-1 --final-reg 1e-1 --importance-sample --loss slackrelu --lr 2e-3 --num-epochs 300 --n-samples 256 --num-initializations 128 --num-instantiations 16 --runs 1`
 
 laub_f5b0d1c_53eee043
+
