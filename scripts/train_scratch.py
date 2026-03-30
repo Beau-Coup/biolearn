@@ -266,6 +266,7 @@ def run_one(key: jax.Array, args: Args):
         json.dumps(asdict(args), sort_keys=True).encode()
     ).hexdigest()[:8]
     run_id = f"{args.system}_{commit}_{args_hash}"
+    print(f"Starting run {run_id}")
     run_dir = Path("results") / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -425,8 +426,8 @@ def run_one(key: jax.Array, args: Args):
 
             ss_to_traj = ss_to_traj_hill
 
-            low = jnp.array([0.0, 0.0, 0.00, 0.0, 0.98, 0.98])
-            high = jnp.array([0.2, 0.2, 0.04, 0.04, 1.0, 1.0])
+            low = jnp.array([0.00, 0.0, 0.00, 0.0, 0.9, 0.9])
+            high = jnp.array([0.4, 0.4, 0.4, 0.4, 1.0, 1.0])
 
             xs = jnp.linspace(low, high, 6)
             xs = jnp.meshgrid(*xs.T)
@@ -629,16 +630,22 @@ def run_one(key: jax.Array, args: Args):
         @eqx.filter_vmap(in_axes=(0, 0, 0, 0))
         def _train_horizon(key, params, opt_state, importance_buffer):
             init = (key, params, opt_state, importance_buffer)
-            (_, final_params, final_opt_state, final_buf), (losses, all_rhos, res_norms) = (
-                jax.lax.scan(_scan_step, init, jnp.arange(n_steps))
-            )
+            (
+                (_, final_params, final_opt_state, final_buf),
+                (losses, all_rhos, res_norms),
+            ) = jax.lax.scan(_scan_step, init, jnp.arange(n_steps))
             return final_params, final_opt_state, final_buf, losses, all_rhos, res_norms
 
         key, subkey = jr.split(key)
         keys = jr.split(subkey, args.num_instantiations)
-        ms, opt_states, importance_buffers, horizon_losses, horizon_rhos, horizon_res_norms = (
-            _train_horizon(keys, ms, opt_states, importance_buffers)
-        )
+        (
+            ms,
+            opt_states,
+            importance_buffers,
+            horizon_losses,
+            horizon_rhos,
+            horizon_res_norms,
+        ) = _train_horizon(keys, ms, opt_states, importance_buffers)
         all_losses.append(horizon_losses)
         all_rhos.append(horizon_rhos)
         all_res_norms.append(horizon_res_norms)

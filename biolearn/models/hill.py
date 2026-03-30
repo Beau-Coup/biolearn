@@ -12,9 +12,10 @@ from .base import BioModel, SimulateConfig
 def _parameter_transform(x: jax.Array) -> jax.Array:
     """Transform parameters to range [0.001, 1]"""
 
-    # return jax.nn.sigmoid(x) * (1 - 0.001) + 0.001
-    return jnp.clip(x, 0.001, 1)
-    # return 0.5 * (jnp.tanh(4.0 * (x - 0.5)) + 1) * (1 - 0.001) + 0.001
+    # return jax.nn.sigmoid(2.0 * (x - 0.5)) * (1 - 0.001) + 0.001
+    return jnp.exp(x)
+    # return jnp.clip(x, 0.001, 1)
+    # return 0.5 * (jnp.tanh(3.0 * (x - 0.5)) + 1) * (1 - 0.001) + 0.001
 
 
 class EdgeType(eqx.Enumeration):
@@ -202,7 +203,7 @@ class BioGNN(eqx.Module):
         return (
             _parameter_transform(self.log_nu) * dx
             - _parameter_transform(self.log_decay) * x
-            + _parameter_transform(self.log_growth)
+            # + _parameter_transform(self.log_growth)
             + jnp.array([0.5, 0.5, 0, 0, 0, 0])
         )
 
