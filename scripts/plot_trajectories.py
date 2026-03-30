@@ -232,8 +232,8 @@ def setup_system(system: str, key: jax.Array):
         ts_plot = jnp.arange(0.0, 20.0, 0.1)
         ts_rob = jnp.arange(0.0, 20.0, 1.0)
         center = jnp.array([1.2, 1.05, 1.5, 2.4, 1.0, 0.1, 0.45])
-        low = center - 0.01
-        high = center + 0.01
+        low = center - 0.2
+        high = center + 0.2
         is_nfc = False
     else:
         raise ValueError(f"Unknown system: {system}")
@@ -328,7 +328,7 @@ def draw_spec_overlay_hill(axes, ts):
 
 def draw_spec_overlay_laub(axes, ts):
     # x4 < 4.5 always
-    _shade_above(axes[2], 4.5)
+    _shade_above(axes[0], 4.5)
 
 
 # ---------------------------------------------------------------------------
@@ -446,9 +446,10 @@ def plot_quadrotor(ts, all_traces, all_ics, rhos, cmap, norm):
 def _robustness_alpha(rho_val, rhos_arr):
     """Map robustness to alpha: more robust = more saturated."""
     rho_min, rho_max = float(rhos_arr.min()), float(rhos_arr.max())
-    span = max(rho_max - rho_min, 1e-6)
-    frac = (rho_val - rho_min) / span
-    return 0.15 + 0.7 * frac  # range [0.15, 0.85]
+    span = min(max(rho_max - rho_min, 1e-6), 1.0)
+    frac = rho_val / rho_max
+    # We're plotting positive robs
+    return 0.15 + 0.65 * frac  # range [0.15, 0.85]
 
 
 # Base colors for hill species (tab10 palette)
@@ -476,30 +477,25 @@ def plot_hill(ts, all_traces, all_ics, rhos, cmap, norm):
     return fig, axes
 
 
+_LAUB_COLORS = ["C0", "C1", "C2", "C3", "C4", "C5", "C6"]
+
+
 def plot_laub(ts, all_traces, all_ics, rhos, cmap, norm):
-    fig, axes = plt.subplots(
-        3,
-        1,
-        figsize=(3.5, 2.6),
-        sharex=True,
-        gridspec_kw={"hspace": 0.08},
-    )
-    state_labels = [r"$x_1$", r"$x_3$", r"$x_4$"]
-    state_indices = [0, 2, 3]
+    fig, ax = plt.subplots(1, 1, figsize=(3.5, 2.0))
+    axes = [ax]
     for i in range(len(all_traces)):
         y_trace = all_traces[i]
-        color = cmap(norm(float(rhos[i])))
-        for j, si in enumerate(state_indices):
-            axes[j].plot(
+        alpha = _robustness_alpha(float(rhos[i]), rhos) * 0.3
+        for j in range(7):
+            ax.plot(
                 np.array(ts),
-                np.array(y_trace[:, si]),
-                color=color,
-                alpha=0.2,
-                linewidth=0.4,
+                np.array(y_trace[:, j]),
+                color=_LAUB_COLORS[j],
+                alpha=alpha,
+                linewidth=0.2,
             )
-    for j in range(3):
-        axes[j].set_ylabel(state_labels[j])
-    axes[-1].set_xlabel("Time (s)")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Concentration")
     draw_spec_overlay_laub(axes, ts)
     _clean_axes(list(axes), ts)
     return fig, list(axes)

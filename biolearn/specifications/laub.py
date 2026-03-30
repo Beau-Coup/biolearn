@@ -2,7 +2,7 @@
 Implementation of ARCH-COMP specification from
 """
 
-from pystl import Always, Eventually, Interval, Not, Predicate
+from pystl import Always, Interval, Not, Predicate
 
 from .common import BaseSpec, get_semantics
 
@@ -26,18 +26,26 @@ class StableConverge(BaseSpec):
         )
         x4_decays = Always(Not(x4_big) | x4_reduce, Interval(0, 16))
 
-        c = 0.9 * 0.6 / 1.4 / 0.8
-
-        x3_like_x1_upper = Predicate(
-            "x3=cx1high", fn=lambda sig, t: 0.1 - sig[t, 2] + c * sig[t, 0]
+        x2_bar = 0.35
+        x2_tol = 0.1
+        x2_conv_upper = Predicate(
+            "x2<x2bar", fn=lambda sig, t: x2_bar + x2_tol - sig[t, 1]
         )
-        x3_like_x1_lower = Predicate(
-            "x3=cx1low", fn=lambda sig, t: 0.1 + sig[t, 2] - c * sig[t, 0]
+        x2_conv_lower = Predicate(
+            "x2>x2bar", fn=lambda sig, t: sig[t, 1] - x2_bar + x2_tol
         )
+        x2_conv = (x2_conv_lower & x2_conv_upper).always().eventually(Interval(0, 10))
 
-        x3_like_x1 = Always(x3_like_x1_lower & x3_like_x1_upper)
-        x3_eventually_like_x1 = Eventually(x3_like_x1, Interval(0, 10))
+        x3_bar = 0.55
+        x3_tol = 0.1
+        x3_conv_upper = Predicate(
+            "x3<x3bar", fn=lambda sig, t: x3_bar + x3_tol - sig[t, 2]
+        )
+        x3_conv_lower = Predicate(
+            "x3>x3bar", fn=lambda sig, t: sig[t, 2] - x3_bar + x3_tol
+        )
+        x3_conv = (x3_conv_lower & x3_conv_upper).always().eventually(Interval(0, 10))
 
-        full = x4_small & x4_decays & x3_eventually_like_x1
+        full = x4_small & x2_conv & x3_conv
 
         self.spec = full

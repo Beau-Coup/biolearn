@@ -468,9 +468,9 @@ def run_one(key: jax.Array, args: Args):
             ss_to_traj = ss_to_traj_laub
 
             center = jnp.array([1.2, 1.05, 1.5, 2.4, 1, 0.1, 0.45])
-            width = 0.01
-            low = jnp.zeros(models[0].shape) - width + center
-            high = jnp.zeros_like(low) + width + center
+            width = 0.2
+            low = -width + center
+            high = width + center
 
             xs = jnp.linspace(low, high, 6)
             xs = jnp.meshgrid(*xs.T)
