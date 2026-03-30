@@ -23,14 +23,14 @@ class Quadrotor(eqx.Module):
     def __init__(self, key: jax.Array):
         km, kl, krm, kr, kp, kd = jr.split(key, 6)
 
-        self.log_body_mass = jr.normal(km) * 1.5
-        self.log_rotor_mass = jr.normal(krm) * 0.5
+        self.log_body_mass = jr.normal(km) * 1.0
+        self.log_rotor_mass = jr.normal(krm) * 1.0
 
         self.log_length = jr.normal(kl) * 1.0
         self.log_radius = jr.normal(kr) * 1.0
 
-        self.kp = jr.uniform(kp, minval=0.1, maxval=15.0)
-        self.kd = jr.uniform(kd, minval=0.1, maxval=5.0)
+        self.kp = jr.lognormal(kp, 2.0)
+        self.kd = jr.lognormal(kd, 2.0)
 
         self.g = 9.81
         self.h_ref = 1.0
