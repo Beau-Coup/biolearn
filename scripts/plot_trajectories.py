@@ -189,8 +189,8 @@ def setup_system(system: str, key: jax.Array):
             max_stepsize=0.5,
             progress_bar=False,
         )
-        ts_plot = jnp.arange(0.0, 10.0, 0.05)
-        ts_rob = jnp.arange(0.0, 10.0, 1.0)
+        ts_plot = jnp.arange(0.0, 5.1, 0.05)
+        ts_rob = jnp.arange(0.0, 25.0, 1.0)
         low = jnp.array([0.0, 0.0, 0.0, 0.0, 0.9, 0.9])
         high = jnp.array([0.4, 0.4, 0.4, 0.4, 1.0, 1.0])
         is_nfc = False
@@ -420,6 +420,10 @@ def plot_quadrotor(ts, all_traces, all_ics, rhos, cmap, norm):
         gridspec_kw={"hspace": 0.08},
     )
     axes = [ax_h, ax_v]
+    traces = jnp.array(all_traces)
+    print(f"Maximum across traces: {traces[:, :, 4].max()}")
+    three = jnp.searchsorted(ts, jnp.array([3.0]))[0]
+    print(f"Velocity across traces: {traces[:, three:, 5].max()}")
     for i in range(len(all_traces)):
         y_trace = all_traces[i]
         color = cmap(norm(float(rhos[i])))

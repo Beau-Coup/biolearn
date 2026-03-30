@@ -16,15 +16,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tyro
 
-plt.rcParams.update({
-    "text.usetex": True,
-    "font.family": "serif",
-    "font.size": 8,
-    "axes.labelsize": 9,
-    "axes.titlesize": 9,
-    "xtick.labelsize": 7,
-    "ytick.labelsize": 7,
-})
+plt.rcParams.update(
+    {
+        "text.usetex": True,
+        "font.family": "serif",
+        "font.size": 8,
+        "axes.labelsize": 9,
+        "axes.titlesize": 9,
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
+    }
+)
 
 RhoMetric = Literal["mean", "sat_rate", "min"]
 
@@ -86,9 +88,7 @@ def main():
         print("No result directories with training_curves.npz found.")
         return
 
-    has_rhos = any(
-        "rhos" in np.load(d / "training_curves.npz").files for d in run_dirs
-    )
+    has_rhos = any("rhos" in np.load(d / "training_curves.npz").files for d in run_dirs)
     metrics = args.metrics if has_rhos else []
     n_metrics = len(metrics)
 
@@ -104,9 +104,7 @@ def main():
         nrows, ncols = 2, 2
 
     fig, axes_arr = plt.subplots(
-        nrows, ncols,
-        figsize=(3.5 * ncols, 1.6 * nrows),
-        squeeze=False,
+        nrows, ncols, figsize=(3.5 * ncols, 1.6 * nrows), squeeze=False, sharex=True
     )
     # Flatten to list for easy indexing
     axes_flat = axes_arr.ravel().tolist()
@@ -118,9 +116,10 @@ def main():
     ax_loss = axes_flat[0]
     metric_axes = {m: axes_flat[1 + i] for i, m in enumerate(metrics)}
 
-    for run_dir in run_dirs:
+    for i, run_dir in enumerate(run_dirs):
         curves = np.load(run_dir / "training_curves.npz")
         losses = curves["losses"]  # (num_instantiations, num_epochs)
+        color = f"C{i}"
 
         # Find best model index from summary
         summary_path = run_dir / "summary.json"
@@ -134,22 +133,31 @@ def main():
         for i in range(losses.shape[0]):
             y = _smooth(losses[i], args.smooth)
             x = np.arange(len(y))
-            is_best = (i == best_idx)
-            ax_loss.plot(x, y, alpha=0.9 if is_best else 0.25,
-                         linewidth=0.8 if is_best else 0.5, color="C0")
+            is_best = i == best_idx
+            ax_loss.plot(
+                x,
+                y,
+                alpha=0.9 if is_best else 0.25,
+                linewidth=0.8 if is_best else 0.5,
+                color=color,
+            )
 
         if "rhos" in curves.files:
             rhos = curves["rhos"]  # (num_instantiations, num_epochs, n_samples)
             for metric in metrics:
                 ax = metric_axes[metric]
-                color = METRIC_COLORS[metric]
                 for i in range(rhos.shape[0]):
                     vals = _compute_metric(rhos[i], metric)
                     y = _smooth(vals, args.smooth)
                     x = np.arange(len(y))
-                    is_best = (i == best_idx)
-                    ax.plot(x, y, alpha=0.9 if is_best else 0.25,
-                            linewidth=0.8 if is_best else 0.5, color=color)
+                    is_best = i == best_idx
+                    ax.plot(
+                        x,
+                        y,
+                        alpha=0.9 if is_best else 0.25,
+                        linewidth=0.8 if is_best else 0.5,
+                        color=color,
+                    )
 
     ax_loss.set_yscale("symlog", linthresh=1e-3)
     ax_loss.set_ylabel("Loss")
@@ -158,6 +166,7 @@ def main():
     for metric, ax in metric_axes.items():
         if metric != "sat_rate":
             ax.axhline(0, color="gray", linestyle=":", linewidth=0.5, alpha=0.6)
+            ax.set_yscale("symlog", linthresh=1e-3)
         ax.set_ylabel(METRIC_LABELS[metric])
         ax.grid(True, alpha=0.2, linewidth=0.4)
 
