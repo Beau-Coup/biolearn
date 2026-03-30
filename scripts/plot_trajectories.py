@@ -165,7 +165,7 @@ def setup_system(system: str, key: jax.Array):
             to_ss=False,
             stiff=True,
             throw=False,
-            max_steps=int(3e4),
+            max_steps=4096,
             rtol=1e-4,
             atol=1e-5,
             max_stepsize=0.5,
@@ -183,16 +183,16 @@ def setup_system(system: str, key: jax.Array):
             to_ss=False,
             stiff=True,
             throw=False,
-            max_steps=int(2e4),
-            rtol=1e-3,
-            atol=1e-4,
+            max_steps=4096,
+            rtol=1e-5,
+            atol=1e-6,
             max_stepsize=0.5,
             progress_bar=False,
         )
-        ts_plot = jnp.arange(0.0, 25.0, 0.1)
-        ts_rob = jnp.arange(0.0, 25.0, 1.0)
-        low = jnp.array([0.0, 0.0, 0.01, 0.01, 0.99, 0.99])
-        high = jnp.array([0.2, 0.2, 0.04, 0.04, 1.0, 1.0])
+        ts_plot = jnp.arange(0.0, 10.0, 0.05)
+        ts_rob = jnp.arange(0.0, 10.0, 1.0)
+        low = jnp.array([0.0, 0.0, 0.0, 0.0, 0.9, 0.9])
+        high = jnp.array([0.4, 0.4, 0.4, 0.4, 1.0, 1.0])
         is_nfc = False
     elif system == "quadrotor":
         model = QuadModel(Quadrotor(key))
@@ -201,7 +201,7 @@ def setup_system(system: str, key: jax.Array):
             to_ss=False,
             stiff=False,
             throw=False,
-            max_steps=int(3e4),
+            max_steps=4096,
             rtol=1e-3,
             atol=1e-4,
             max_stepsize=0.5,
@@ -232,8 +232,8 @@ def setup_system(system: str, key: jax.Array):
         ts_plot = jnp.arange(0.0, 20.0, 0.1)
         ts_rob = jnp.arange(0.0, 20.0, 1.0)
         center = jnp.array([1.2, 1.05, 1.5, 2.4, 1.0, 0.1, 0.45])
-        low = center - 0.1
-        high = center + 0.1
+        low = center - 0.01
+        high = center + 0.01
         is_nfc = False
     else:
         raise ValueError(f"Unknown system: {system}")
@@ -322,9 +322,8 @@ def draw_spec_overlay_quadrotor(axes, ts):
 
 
 def draw_spec_overlay_hill(axes, ts):
-    # x_i < 1.5 always for all 4 species
-    for i in range(min(len(axes), 4)):
-        _shade_above(axes[i], 1.5)
+    # x_i < 1.5 always for all 4 species (single axis now)
+    _shade_above(axes[0], 1.5)
 
 
 def draw_spec_overlay_laub(axes, ts):
@@ -363,13 +362,15 @@ def _overlay_bounds(axes, csv_path: str, system: str):
             if hi_col in df.columns:
                 ax.plot(t, df[hi_col].values, **_BOUNDS_STYLE)
     elif system == "hill":
-        t = df["Time_s"].values
-        for j, name in enumerate(["x1", "x2", "x3", "x4"]):
-            lo_col, hi_col = f"Min_{name}", f"Max_{name}"
-            if j < len(axes) and lo_col in df.columns:
-                axes[j].plot(t, df[lo_col].values, **_BOUNDS_STYLE)
-            if j < len(axes) and hi_col in df.columns:
-                axes[j].plot(t, df[hi_col].values, **_BOUNDS_STYLE)
+        t = df["Time"].values
+        ax = axes[0]
+        for j in range(6):
+            lo_col, hi_col = f"Min_state_{j + 1}", f"Max_state_{j + 1}"
+            style = {**_BOUNDS_STYLE}
+            if lo_col in df.columns:
+                ax.plot(t, df[lo_col].values, **style)
+            if hi_col in df.columns:
+                ax.plot(t, df[hi_col].values, **style)
     elif system == "laub":
         t = df["Time_s"].values
         state_names = ["x1", "x3", "x4"]
@@ -438,32 +439,37 @@ def plot_quadrotor(ts, all_traces, all_ics, rhos, cmap, norm):
     return fig, axes
 
 
+def _robustness_alpha(rho_val, rhos_arr):
+    """Map robustness to alpha: more robust = more saturated."""
+    rho_min, rho_max = float(rhos_arr.min()), float(rhos_arr.max())
+    span = max(rho_max - rho_min, 1e-6)
+    frac = (rho_val - rho_min) / span
+    return 0.15 + 0.7 * frac  # range [0.15, 0.85]
+
+
+# Base colors for hill species (tab10 palette)
+_HILL_COLORS = ["C0", "C1", "C2", "C3", "C4", "C5"]
+
+
 def plot_hill(ts, all_traces, all_ics, rhos, cmap, norm):
-    fig, axes = plt.subplots(
-        4,
-        1,
-        figsize=(3.5, 3.2),
-        sharex=True,
-        gridspec_kw={"hspace": 0.08},
-    )
-    species_labels = [r"$x_1$", r"$x_2$", r"$x_3$", r"$x_4$"]
+    fig, ax = plt.subplots(1, 1, figsize=(3.5, 2.0))
+    axes = [ax]
     for i in range(len(all_traces)):
         y_trace = all_traces[i]
-        color = cmap(norm(float(rhos[i])))
-        for j in range(4):
-            axes[j].plot(
+        alpha = _robustness_alpha(float(rhos[i]), rhos) * 0.5
+        for j in range(6):
+            ax.plot(
                 np.array(ts),
                 np.array(y_trace[:, j]),
-                color=color,
-                alpha=0.6,
+                color=_HILL_COLORS[j],
+                alpha=alpha,
                 linewidth=0.4,
             )
-    for j in range(4):
-        axes[j].set_ylabel(species_labels[j])
-    axes[-1].set_xlabel("Time (s)")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Concentration")
     draw_spec_overlay_hill(axes, ts)
-    _clean_axes(list(axes), ts)
-    return fig, list(axes)
+    _clean_axes(axes, ts)
+    return fig, axes
 
 
 def plot_laub(ts, all_traces, all_ics, rhos, cmap, norm):

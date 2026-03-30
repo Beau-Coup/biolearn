@@ -43,7 +43,7 @@ from tqdm import tqdm
 
 from biolearn.models.base import BioModel, SimulateConfig
 from biolearn.models.hill import BioGNN, BioGnnModel, EdgeType
-from biolearn.models.laub import LLModel, LaubLoomis
+from biolearn.models.laub import LaubLoomis, LLModel
 from biolearn.models.nfc import NFC, MoormanNFC
 from biolearn.models.quadrotor import QuadModel, Quadrotor
 from biolearn.specifications.hk25 import FastProduce
@@ -221,6 +221,21 @@ def generate_random_directions(key, theta_0, sizes):
     return d1, d2
 
 
+def generate_hessian_directions(theta_0, eval_fn, metric="mean"):
+    """Top-2 eigenvectors of the Hessian of the aggregated loss."""
+
+    def scalar_fn(flat_params):
+        rhos = eval_fn(flat_params)
+        return aggregate(rhos, metric)
+
+    hessian_fn = jax.hessian(scalar_fn)
+    H = hessian_fn(theta_0)
+
+    eigvals, eigvecs = jnp.linalg.eigh(H)
+    idx = jnp.argsort(-jnp.abs(eigvals))[:2]
+    return eigvecs[:, idx[0]], eigvecs[:, idx[1]]
+
+
 # ---------------------------------------------------------------------------
 # Per-system configuration
 # ---------------------------------------------------------------------------
@@ -246,7 +261,7 @@ def setup_system(system: str, key: jax.Array):
             to_ss=False,
             stiff=True,
             throw=False,
-            max_steps=int(3e4),
+            max_steps=4096,
             rtol=1e-4,
             atol=1e-5,
             max_stepsize=0.5,
@@ -262,17 +277,17 @@ def setup_system(system: str, key: jax.Array):
         traj_fn = ss_to_traj_hill
         sim_cfg = SimulateConfig(
             to_ss=False,
-            stiff=True,
+            stiff=False,
             throw=False,
-            max_steps=int(2e4),
+            max_steps=4096,
             rtol=1e-3,
             atol=1e-4,
             max_stepsize=0.5,
             progress_bar=False,
         )
-        ts = jnp.arange(0.0, 15.0, 1.0)
-        low = jnp.array([0.0, 0.0, 0.01, 0.01, 0.99, 0.99])
-        high = jnp.array([0.2, 0.2, 0.04, 0.04, 1.0, 1.0])
+        ts = jnp.arange(0.0, 25.0, 1.0)
+        low = jnp.array([0.0, 0.0, 0.0, 0.0, 0.9, 0.9])
+        high = jnp.array([0.4, 0.4, 0.4, 0.4, 1.0, 1.0])
         is_nfc = False
     elif system == "quadrotor":
         model = QuadModel(Quadrotor(key))
@@ -282,7 +297,7 @@ def setup_system(system: str, key: jax.Array):
             to_ss=False,
             stiff=False,
             throw=False,
-            max_steps=int(3e4),
+            max_steps=4096,
             rtol=1e-3,
             atol=1e-4,
             max_stepsize=0.5,
@@ -310,10 +325,10 @@ def setup_system(system: str, key: jax.Array):
             max_stepsize=0.5,
             progress_bar=False,
         )
-        ts = jnp.arange(0.0, 20.0, 0.5)
+        ts = jnp.arange(0.0, 20.0, 1.0)
         center = jnp.array([1.2, 1.05, 1.5, 2.4, 1.0, 0.1, 0.45])
-        low = center - 0.1
-        high = center + 0.1
+        low = center - 0.01
+        high = center + 0.01
         is_nfc = False
     else:
         raise ValueError(f"Unknown system: {system}")
@@ -405,15 +420,17 @@ METRIC_LABELS = {
     "min": r"$\min \rho$",
 }
 
-plt.rcParams.update({
-    "text.usetex": True,
-    "font.family": "serif",
-    "font.size": 8,
-    "axes.labelsize": 9,
-    "axes.titlesize": 9,
-    "xtick.labelsize": 7,
-    "ytick.labelsize": 7,
-})
+plt.rcParams.update(
+    {
+        "text.usetex": True,
+        "font.family": "serif",
+        "font.size": 8,
+        "axes.labelsize": 9,
+        "axes.titlesize": 9,
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
+    }
+)
 
 
 def plot_landscape(
@@ -475,7 +492,7 @@ class PlotArgs:
     """Random seed for model initialization."""
     checkpoint: str | None = None
     """Path to .eqx checkpoint. Loads trained parameters instead of random init."""
-    mode: Literal["random_dirs", "coord_slice"] = "random_dirs"
+    mode: Literal["random_dirs", "coord_slice", "hessian"] = "random_dirs"
     """Visualization mode."""
     grid_size: int = 31
     """Grid points per axis."""
@@ -561,6 +578,10 @@ def main():
         d1, d2 = generate_random_directions(jr.key(args.dir_seed), theta_0, sizes)
         label_x = r"$\epsilon_1$"
         label_y = r"$\epsilon_2$"
+    elif args.mode == "hessian":
+        d1, d2 = generate_hessian_directions(theta_0, eval_fn, metric=args.metric)
+        label_x = r"$\epsilon_1$"
+        label_y = r"$\epsilon_2$"
     else:
         assert args.param_i < D and args.param_j < D, f"param indices must be < {D}"
         d1 = None
@@ -575,7 +596,7 @@ def main():
     pbar = tqdm(total=total, desc="Sweep")
 
     for i, alpha in enumerate(alphas):
-        if args.mode == "random_dirs":
+        if args.mode in ("random_dirs", "hessian"):
             theta = theta_0 + alpha * d1 + betas[:, None] * d2  # pyright: ignore
         else:
             theta = jnp.tile(theta_0, (args.grid_size, 1))
@@ -591,7 +612,12 @@ def main():
     pbar.close()
 
     # --- Plot ---
-    system_names = {"nfc": "NFC", "hill": "Hill", "quadrotor": "Quadrotor", "laub": "Laub-Loomis"}
+    system_names = {
+        "nfc": "NFC",
+        "hill": "Hill",
+        "quadrotor": "Quadrotor",
+        "laub": "Laub-Loomis",
+    }
     title = rf"Robustness landscape -- {system_names[args.system]} ({D}D)"
 
     plot_landscape(
