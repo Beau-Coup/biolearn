@@ -43,6 +43,14 @@ class FastProduce(BaseSpec):
         max3 = Predicate("x3<1.5", fn=lambda sig, t: 1.5 - sig[t, 2]).always()
         max4 = Predicate("x4<1.5", fn=lambda sig, t: 1.5 - sig[t, 3]).always()
 
-        full = must_produce & inhibit3 & max1 & max2 & max3 & max4
+        full = (
+            must_produce_condition.eventually()
+            & must_produce
+            & inhibit3
+            & max1
+            & max2
+            & max3
+            & max4
+        )
 
         self.spec = full
