@@ -232,8 +232,8 @@ def setup_system(system: str, key: jax.Array):
         ts_plot = jnp.arange(0.0, 20.0, 0.1)
         ts_rob = jnp.arange(0.0, 20.0, 1.0)
         center = jnp.array([1.2, 1.05, 1.5, 2.4, 1.0, 0.1, 0.45])
-        low = center - 0.2
-        high = center + 0.2
+        low = center - 0.1
+        high = center + 0.1
         is_nfc = False
     else:
         raise ValueError(f"Unknown system: {system}")

@@ -50,7 +50,7 @@ In order:
 `hill_2a9a03a_ae821660`
 
 ## Laub Loomis
-`uv run scripts/train_scratch.py --system laub --boundary-samples 64 --regularizer 1e-1 --final-reg 1e-1 --importance-sample --loss slackrelu --lr 2e-3 --num-epochs 300 --n-samples 256 --num-initializations 128 --num-instantiations 16 --runs 1`
+`uv run scripts/train_scratch.py --system laub --boundary-samples 64 --regularizer 1e-1 --final-reg 1e-1 --importance-sample --loss slackrelu --lr 2e-3 --num-epochs 700 --n-samples 256 --num-initializations 128 --num-instantiations 16 --runs 1`
 
 laub_f5b0d1c_53eee043
 
