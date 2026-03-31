@@ -53,7 +53,12 @@ In order:
 `uv run scripts/train_scratch.py --system laub --boundary-samples 64 --regularizer 1e-1 --final-reg 1e-1 --importance-sample --loss slackrelu --lr 2e-3 --num-epochs 700 --n-samples 256 --num-initializations 128 --num-instantiations 16 --runs 1`
 
 laub_f5b0d1c_53eee043
+`uv run scripts/train_scratch.py --system laub --boundary-samples 64 --regularizer 1e-1 --final-reg 1e-1 --importance-sample --loss slackrelu  --lr 2e-3 --num-epochs 700 --n-samples 256 --num-initializations 128 --num-instantiations 8 --runs 1`
 
+neither: `laub_94e15f3_a7f7effd`
+both: `laub_94e15f3_9d531372`
+No IS: `laub_94e15f3_7f814094` doesn't change anything, almost
+no residual: 
 
 ## Run quadrotor
 Getting experiments now
@@ -62,3 +67,18 @@ SlackReLU: `quadrotor_918f69a_acb8a235`
 ReLU: `quadrotor_918f69a_98e11cb1`
 LeakyReLU: `quadrotor_918f69a_b33e43bd`
 
+With new initializations
+
+SlackReLU: `quadrotor_d34ce11_acb8a235`
+ReLU: `quadrotor_d34ce11_98e11cb1`
+LeakyReLU: `quadrotor_d34ce11_b33e43bd`
+
+## Rerunning Hill with more importance samples
+
+In order of run script
+
+64 IS: `hill_94e15f3_8c0a426d`
+NO IS: `hill_94e15f3_c79c2ec7`
+64 IS, no MLP: `hill_94e15f3_8a126949`
+100 IS: `hill_94e15f3_68bdfee0`
+100 IS no mlp: `hill_94e15f3_c8b67e8e`

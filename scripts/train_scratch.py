@@ -2,10 +2,8 @@
 
 import os
 
-from biolearn.models.laub import LaubLoomis, LLModel
-from biolearn.specifications.laub import StableConverge
-
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".4"
 os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=2"
 
 import hashlib
@@ -27,8 +25,10 @@ from tqdm import tqdm
 
 from biolearn import BioGNN, BioGnnModel, FastProduce
 from biolearn.models.hill import EdgeType
+from biolearn.models.laub import LaubLoomis, LLModel
 from biolearn.models.nfc import NFC, MoormanNFC
 from biolearn.models.quadrotor import QuadModel, Quadrotor
+from biolearn.specifications.laub import StableConverge
 from biolearn.specifications.quadrotor import HeightMaintain
 from biolearn.specifications.ss_classification import PhiXorFast
 
@@ -415,7 +415,7 @@ def run_one(key: jax.Array, args: Args):
 
             importance_buffers = jax.tree.map(
                 lambda *bs: jnp.stack(bs),
-                *[make_buffer(6, 1024) for _ in range(args.num_instantiations)],
+                *[make_buffer(6, 400) for _ in range(args.num_instantiations)],
             )
 
             t_final = 25.0
