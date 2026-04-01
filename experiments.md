@@ -82,3 +82,11 @@ NO IS: `hill_94e15f3_c79c2ec7`
 64 IS, no MLP: `hill_94e15f3_8a126949`
 100 IS: `hill_94e15f3_68bdfee0`
 100 IS no mlp: `hill_94e15f3_c8b67e8e`
+neither: `hill_47af3eb_bca81456`
+
+### No MLP runs correct
+100 IS: 
+64 IS: `hill_47af3eb_951bd046`
+No IS: 
+
+# 2000 Epochs Experiments

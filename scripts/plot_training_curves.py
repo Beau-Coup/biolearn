@@ -130,6 +130,14 @@ def main():
         else:
             best_idx = 0
 
+        # Subtract regularization term from loss when reg is large
+        args_path = run_dir / "args.json"
+        if args_path.exists():
+            with open(args_path) as f:
+                run_args = json.load(f)
+        else:
+            run_args = {}
+
         for i in range(losses.shape[0]):
             y = _smooth(losses[i], args.smooth)
             x = np.arange(len(y))

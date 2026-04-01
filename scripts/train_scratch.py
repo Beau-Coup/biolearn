@@ -113,7 +113,9 @@ class BufferModel(eqx.Module):
     residual_model: MLP
     slack: jax.Array
 
-    def __init__(self, key: jax.Array, nominal: BioModel):
+    enabled: bool
+
+    def __init__(self, key: jax.Array, nominal: BioModel, enabled=True):
         self.nominal_model = nominal
         state_size = math.prod(nominal.shape)
         residual_model = MLP(key, state_size=state_size, hidden_size=64)
@@ -121,11 +123,14 @@ class BufferModel(eqx.Module):
             lambda x: x * 1e-4 if eqx.is_inexact_array(x) else x,
             residual_model,
         )
+        self.enabled = enabled
         self.slack = jnp.array(0.01)
 
     def _step(self, t, y, args):
         mlp_out = self.residual_model(y.flatten()).reshape(y.shape)
-        return self.nominal_model.diffrax_step(t, y, args) + mlp_out * y
+        return self.nominal_model.diffrax_step(t, y, args) + mlp_out * y * jnp.array(
+            self.enabled, dtype=jnp.float64
+        )
 
     def simulate(
         self,
@@ -509,7 +514,9 @@ def run_one(key: jax.Array, args: Args):
         safe_traj = ss_to_traj(y_traces, x0)
         rhos = jax.vmap(spec.evaluate)(safe_traj)
         task_loss = group_loss(rhos, model.slack)
-        return task_loss + reg * residual_l2(model), rhos
+        return task_loss + jnp.asarray(
+            args.buffer, dtype=jnp.float32
+        ) * reg * residual_l2(model), rhos
 
     @eqx.filter_jit
     def nominal_loss(model, x0, ts, reg=args.regularizer):
@@ -540,7 +547,7 @@ def run_one(key: jax.Array, args: Args):
     key, subkey = jr.split(key)
     model_keys = jr.split(subkey, args.num_instantiations)
 
-    bms = [BufferModel(model_keys[i], models[i]) for i in inds]
+    bms = [BufferModel(model_keys[i], models[i], enabled=args.buffer) for i in inds]
     all_params = [eqx.partition(bm, eqx.is_array)[0] for bm in bms]
     _, static = eqx.partition(bms[0], eqx.is_array)
     stacked_params = jax.tree.map(lambda *s: jnp.stack(s), *all_params)
@@ -783,6 +790,8 @@ class Args:
     num_initializations: int = 10
     """The number of parameters to test before starting to optimize."""
     num_importance_samples: int = 32
+    buffer: bool = True
+    """Whether or not to enable the residual MLP"""
 
 
 def main():
