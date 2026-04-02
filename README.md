@@ -76,4 +76,4 @@ Contributions are welcome.
 - Use clear, descriptive docstrings and type hints where helpful.
 
 ## License
-MIT. See [`LICENSE`](LICENSE).
+CC BY 4.0. See [`LICENSE`](LICENSE).
