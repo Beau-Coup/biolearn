@@ -36,6 +36,7 @@ import diffrax
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import tyro
@@ -432,6 +433,75 @@ plt.rcParams.update(
     }
 )
 
+import matplotlib.pyplot as plt
+
+
+class ThreeSegmentHybridNorm(mcolors.Normalize):
+    def __init__(self, vmin=-100.0, vcenter=0.0, vmax=0.01, clip=False):
+        super().__init__(vmin, vmax, clip)
+        self.vmin = vmin
+        self.vcenter = vcenter
+        self.vmax = vmax
+        # Linear threshold is symmetric based on vmax
+        self.lin_thresh = -vmax
+
+        # Log constants for the negative tail
+        self.log_min = np.log10(abs(vmin))
+        self.log_thresh = np.log10(abs(self.lin_thresh))
+
+    def __call__(self, value, clip=None):
+        x, is_scalar = self.process_value(value)
+        result = np.zeros_like(x, dtype=float)
+
+        mask1 = x < self.lin_thresh
+        mask2 = (x >= self.lin_thresh) & (x < self.vcenter)
+        mask3 = x >= self.vcenter
+
+        # 1. Log segment: [vmin, lin_thresh] -> [0, 0.25]
+        # (log(abs(x)) - 2) / (-2 - 2) gives 0 at -100 and 1 at -0.01
+        res1 = (np.log10(np.abs(x[mask1])) - self.log_min) / (
+            self.log_thresh - self.log_min
+        )
+        result[mask1] = res1 * 0.25
+
+        # 2. Negative Linear: [lin_thresh, vcenter] -> [0.25, 0.5]
+        res2 = (x[mask2] - self.lin_thresh) / (self.vcenter - self.lin_thresh)
+        result[mask2] = 0.25 + (res2 * 0.25)
+
+        # 3. Positive Linear: [vcenter, vmax] -> [0.5, 1.0]
+        res3 = (x[mask3] - self.vcenter) / (self.vmax - self.vcenter)
+        result[mask3] = 0.5 + (res3 * 0.5)
+
+        return (
+            result[0]
+            if is_scalar
+            else np.ma.masked_array(result, mask=np.ma.getmask(x))
+        )
+
+    def inverse(self, value):
+        val, is_scalar = self.process_value(value)
+        result = np.zeros_like(val, dtype=float)
+
+        mask1 = val < 0.25
+        mask2 = (val >= 0.25) & (val < 0.5)
+        mask3 = val >= 0.5
+
+        # Inv 1: [0, 0.25] -> [vmin, lin_thresh]
+        norm1 = val[mask1] / 0.25
+        result[mask1] = -(
+            10 ** (norm1 * (self.log_thresh - self.log_min) + self.log_min)
+        )
+
+        # Inv 2: [0.25, 0.5] -> [lin_thresh, vcenter]
+        norm2 = (val[mask2] - 0.25) / 0.25
+        result[mask2] = self.lin_thresh + norm2 * (self.vcenter - self.lin_thresh)
+
+        # Inv 3: [0.5, 1.0] -> [vcenter, vmax]
+        norm3 = (val[mask3] - 0.5) / 0.5
+        result[mask3] = self.vcenter + norm3 * (self.vmax - self.vcenter)
+
+        return result[0] if is_scalar else result
+
 
 def plot_landscape(
     alpha_vals,
@@ -454,15 +524,35 @@ def plot_landscape(
     else:
         vmax = np.nanmax(grid[np.isfinite(grid)]) if np.any(np.isfinite(grid)) else 1.0
         vmin = np.nanmin(grid[np.isfinite(grid)]) if np.any(np.isfinite(grid)) else -1.0
-        vmax = max(vmax, -vmin)
-        levels = np.linspace(-vmax, vmax, 31)
+        if vmax > 0:
+            norm = ThreeSegmentHybridNorm(vmin=vmin, vmax=vmax)
+            min_levels = np.geomspace(vmin, -vmax, 10, endpoint=False)
+            min_levels2 = np.linspace(-vmax, 0, 5, endpoint=False)
+            max_levels = np.linspace(0, vmax, 16)
+            levels = np.concatenate([min_levels, min_levels2, max_levels])
+
+            min_ls = np.linspace(vmin, -vmax, 2, endpoint=True)
+            max_ls = np.linspace(0, vmax, 2)
+            ls = np.concatenate([min_ls, max_ls])
+        else:
+            vmax = max(-vmin, vmax)
+            norm = mcolors.Normalize(vmin=-vmax, vmax=vmax)
+            levels = np.linspace(-vmax, vmax, 31)
+            ls = np.linspace(-vmax, vmax, 5)
+
         boundary = [0.0]
 
-    cf = ax.contourf(A, B, grid, levels=levels, cmap="RdYlGn", extend="both")
+    cf = ax.contourf(
+        A, B, grid, levels=levels, cmap="RdYlGn", extend="neither", norm=norm
+    )
     ax.contour(A, B, grid, levels=boundary, colors=["#c0392b"], linewidths=1.5)
     cbar = fig.colorbar(cf, ax=ax)
     cbar.set_label(METRIC_LABELS.get(metric, metric))
+    if metric != "sat_frac":
+        cbar.set_ticks(ls, labels=[f"{l:.2f}" for l in ls])
     # ax.plot(0, 0, "k*", markersize=8, zorder=10)
+    ax.set_xticks([-1, 0, 1])
+    ax.set_yticks([-1, 0, 1])
     ax.set_xlabel(label_x)
     ax.set_ylabel(label_y)
     if title:
@@ -616,6 +706,7 @@ def main():
         "laub": "Laub-Loomis",
     }
     title = rf"Robustness landscape -- {system_names[args.system]} ({D}D)"
+    title = ""
 
     plot_landscape(
         alphas,
