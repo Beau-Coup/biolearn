@@ -327,8 +327,8 @@ def setup_system(system: str, key: jax.Array):
         )
         ts = jnp.arange(0.0, 20.0, 1.0)
         center = jnp.array([1.2, 1.05, 1.5, 2.4, 1.0, 0.1, 0.45])
-        low = center - 0.01
-        high = center + 0.01
+        low = center - 0.1
+        high = center + 0.1
         is_nfc = False
     else:
         raise ValueError(f"Unknown system: {system}")
@@ -452,20 +452,17 @@ def plot_landscape(
         levels = np.linspace(0, 1, 31)
         boundary = [0.5]
     else:
-        vmax = (
-            np.nanmax(np.abs(grid[np.isfinite(grid)]))
-            if np.any(np.isfinite(grid))
-            else 1.0
-        )
-        vmax = min(vmax, 0.5)
+        vmax = np.nanmax(grid[np.isfinite(grid)]) if np.any(np.isfinite(grid)) else 1.0
+        vmin = np.nanmin(grid[np.isfinite(grid)]) if np.any(np.isfinite(grid)) else -1.0
+        vmax = max(vmax, -vmin)
         levels = np.linspace(-vmax, vmax, 31)
         boundary = [0.0]
 
-    cf = ax.contourf(A, B, grid, levels=levels, cmap="RdBu_r", extend="both")
+    cf = ax.contourf(A, B, grid, levels=levels, cmap="RdYlGn", extend="both")
     ax.contour(A, B, grid, levels=boundary, colors=["#c0392b"], linewidths=1.5)
     cbar = fig.colorbar(cf, ax=ax)
     cbar.set_label(METRIC_LABELS.get(metric, metric))
-    ax.plot(0, 0, "k*", markersize=8, zorder=10)
+    # ax.plot(0, 0, "k*", markersize=8, zorder=10)
     ax.set_xlabel(label_x)
     ax.set_ylabel(label_y)
     if title:

@@ -189,7 +189,7 @@ def setup_system(system: str, key: jax.Array):
             max_stepsize=0.5,
             progress_bar=False,
         )
-        ts_plot = jnp.arange(0.0, 5.1, 0.05)
+        ts_plot = jnp.arange(0.0, 5.5, 0.05)
         ts_rob = jnp.arange(0.0, 25.0, 1.0)
         low = jnp.array([0.0, 0.0, 0.0, 0.0, 0.9, 0.9])
         high = jnp.array([0.4, 0.4, 0.4, 0.4, 1.0, 1.0])
@@ -329,6 +329,10 @@ def draw_spec_overlay_hill(axes, ts):
 def draw_spec_overlay_laub(axes, ts):
     # x4 < 4.5 always
     _shade_above(axes[0], 4.5)
+    axes[0].axhline(0.45, ls="-.", color="C1", lw=1.0, alpha=0.5)
+    axes[0].axhline(0.25, ls="--", color="C1", lw=1.0)
+    axes[0].axhline(0.45, ls="--", color="C2", lw=1.0, alpha=0.5)
+    axes[0].axhline(0.65, ls="--", color="C2", lw=1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -372,14 +376,15 @@ def _overlay_bounds(axes, csv_path: str, system: str):
             if hi_col in df.columns:
                 ax.plot(t, df[hi_col].values, **style)
     elif system == "laub":
-        t = df["Time_s"].values
-        state_names = ["x1", "x3", "x4"]
-        for j, name in enumerate(state_names):
-            lo_col, hi_col = f"Min_{name}", f"Max_{name}"
-            if j < len(axes) and lo_col in df.columns:
-                axes[j].plot(t, df[lo_col].values, **_BOUNDS_STYLE)
-            if j < len(axes) and hi_col in df.columns:
-                axes[j].plot(t, df[hi_col].values, **_BOUNDS_STYLE)
+        t = df["Time"].values
+        ax = axes[0]
+        for j in range(1, 8):
+            lo_col, hi_col = f"Min_state_{j}", f"Max_state_{j}"
+            style = {**_BOUNDS_STYLE}
+            if lo_col in df.columns:
+                ax.plot(t, df[lo_col].values, **style)
+            if hi_col in df.columns:
+                ax.plot(t, df[hi_col].values, **style)
     elif system == "nfc":
         t = df["Time_s"].values
         if "Min_err" in df.columns:
@@ -461,14 +466,14 @@ def plot_hill(ts, all_traces, all_ics, rhos, cmap, norm):
     axes = [ax]
     for i in range(len(all_traces)):
         y_trace = all_traces[i]
-        alpha = _robustness_alpha(float(rhos[i]), rhos) * 0.5
+        alpha = _robustness_alpha(float(rhos[i]), rhos) * 0.8
         for j in range(6):
             ax.plot(
                 np.array(ts),
                 np.array(y_trace[:, j]),
                 color=_HILL_COLORS[j],
                 alpha=alpha,
-                linewidth=0.4,
+                linewidth=0.5,
             )
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Concentration")
@@ -485,7 +490,7 @@ def plot_laub(ts, all_traces, all_ics, rhos, cmap, norm):
     axes = [ax]
     for i in range(len(all_traces)):
         y_trace = all_traces[i]
-        alpha = _robustness_alpha(float(rhos[i]), rhos) * 0.3
+        alpha = _robustness_alpha(float(rhos[i]), rhos) * 0.7
         for j in range(7):
             ax.plot(
                 np.array(ts),
@@ -530,10 +535,106 @@ class Args:
     """Number of initial conditions to sample."""
     bounds_csv: str | None = None
     """CSV with upper/lower bounds to overlay. Columns depend on system."""
+    traj_csv_dir: str | None = None
+    """Directory with per-state trajectory CSVs (e.g. matlab/). Overrides simulation."""
     output: str = "figures/trajectories.pdf"
     """Output file path."""
     show: bool = False
     """Call plt.show()."""
+    parameter_vary: bool = False
+    """Plot a variation over the parameters for a single initial condition."""
+    perturb_scale: float = 0.3
+    """Scale of Gaussian perturbation to model parameters (for --parameter-vary)."""
+    ic_grid: bool = False
+    """Plot robustness heatmap over a 2D grid of initial conditions."""
+    ic_grid_size: int = 25
+    """Number of grid points per axis for IC grid."""
+    ic_grid_dims: tuple[int, int] = (4, 5)
+    """State indices for the two IC grid axes (default: h, dh)."""
+
+
+def perturb_model(model, key, scale):
+    """Add Gaussian noise to all learnable parameters of a model."""
+    params, static = eqx.partition(model, eqx.is_inexact_array)
+    flat_params, tree_def = jax.tree_util.tree_flatten(params)
+    keys = jr.split(key, len(flat_params))
+    noisy = [p + scale * jr.normal(k, p.shape) for p, k in zip(flat_params, keys)]
+    noisy_params = jax.tree_util.tree_unflatten(tree_def, noisy)
+    return eqx.combine(noisy_params, static)
+
+
+def plot_ic_grid(points, rho_grid, dim_labels):
+    """Plot robustness heatmap over 2D IC grid."""
+    fig, ax = plt.subplots(1, 1, figsize=(3.5, 3.5))
+
+    rho_min = rho_grid.min()
+    rho_max = rho_grid.max()
+
+    if rho_min < 0:
+        norm = mcolors.TwoSlopeNorm(vmin=rho_min, vcenter=0.0, vmax=rho_max)
+        colors = ["#e31a1c", "#ff7f00", "#33a02c"]
+        cmap = mcolors.LinearSegmentedColormap.from_list("RedBlackGreen", colors)
+    else:
+        norm = mcolors.Normalize(vmin=0, vmax=max(rho_max, 0.01))
+        cmap = cm.Greens
+
+    cf = ax.scatter(
+        np.array(points[:, 0]),
+        np.array(points[:, 1]),
+        s=2.0,
+        c=rho_grid,
+        cmap=cmap,
+        norm=norm,
+    )
+    # ax.contour(
+    #     np.array(grid_h),
+    #     np.array(grid_v),
+    #     rho_grid,
+    #     levels=[0.0],
+    #     colors="k",
+    #     linewidths=1.0,
+    # )
+    # fig.colorbar(cf, ax=ax, label="Robustness")
+    # ax.set_xlabel(dim_labels[0])
+    # ax.set_ylabel(dim_labels[1])
+    # ax.spines["top"].set_visible(False)
+    # ax.spines["right"].set_visible(False)
+    ax.margins(0.01)
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1)
+    ax.xaxis.set_major_locator(plt.NullLocator())
+    ax.yaxis.set_major_locator(plt.NullLocator())
+    return fig, [ax]
+
+
+def load_csv_trajectories(
+    csv_dir: str, system: str
+) -> tuple[np.ndarray, list[np.ndarray]]:
+    """Load per-state CSV files and assemble into full trajectories.
+
+    Returns (ts, traces) where ts is shape (T,) and traces is a list of
+    arrays each of shape (T, n_states).
+    """
+    if system == "hill":
+        prefix, n_states = "hill_traj_state", 6
+    elif system == "laub":
+        prefix, n_states = "laubloomis_traj_state", 7
+    else:
+        raise ValueError(f"CSV trajectories not supported for system {system!r}")
+
+    dfs = []
+    for s in range(1, n_states + 1):
+        path = Path(csv_dir) / f"{prefix}_{s}.csv"
+        dfs.append(pd.read_csv(path))
+
+    ts = dfs[0]["Time"].values
+    n_traj = len([c for c in dfs[0].columns if c.startswith("traj_")])
+    traces = []
+    for j in range(1, n_traj + 1):
+        cols = [df[f"traj_{j}"].values for df in dfs]
+        traces.append(np.stack(cols, axis=-1))  # (T, n_states)
+    return ts, traces
 
 
 def main():
@@ -541,45 +642,142 @@ def main():
     key = jr.key(args.seed)
     key, subkey = jr.split(key)
 
-    # --- System setup ---
-    nominal_model, spec, sim_cfg, ts_plot, ts_rob, low, high, is_nfc = setup_system(
-        args.system, subkey
-    )
+    # --- Load from CSV or simulate ---
+    if args.traj_csv_dir is not None:
+        # Load pre-computed trajectories from CSV files
+        ts_csv, all_traces_np = load_csv_trajectories(args.traj_csv_dir, args.system)
+        ics = np.zeros((len(all_traces_np), all_traces_np[0].shape[-1]))  # dummy ICs
 
-    # --- Model setup ---
-    if args.checkpoint is not None:
-        if args.model_type == "buffer":
-            template = BufferModel(jr.key(args.buffer_seed), nominal_model)
-        else:
-            template = nominal_model
-        model = eqx.tree_deserialise_leaves(args.checkpoint, template)
-        print(f"Loaded checkpoint from {args.checkpoint}")
-    elif args.model_type == "buffer":
-        model = BufferModel(jr.key(args.buffer_seed), nominal_model)
+        # Setup spec and get ts_plot limit from setup_system
+        _, spec, _, ts_plot_cfg, _, _, _, _ = setup_system(args.system, subkey)
+        t_plot_max = float(ts_plot_cfg[-1])
+
+        # Truncate CSV data to plotting time range
+        plot_mask = ts_csv <= t_plot_max + 1e-9
+        ts_plot = jnp.array(ts_csv[plot_mask])
+        all_traces = [jnp.array(t[plot_mask]) for t in all_traces_np]
+
+        # Use full CSV data (not truncated) for robustness evaluation at dt=1.0
+        dt_csv = float(ts_csv[1] - ts_csv[0])
+        step = max(1, round(1.0 / dt_csv))
+        traj_fn = TRAJ_FNS[args.system]
+        rhos = []
+        for i in range(len(all_traces_np)):
+            traj_rob = jnp.array(all_traces_np[i][::step])
+            traj = traj_fn(traj_rob, ics[i])
+            rho = spec.evaluate(traj)
+            rho = float(jnp.where(jnp.isfinite(rho), rho, -1.0))
+            rhos.append(rho)
+        rhos = np.array(rhos)
     else:
-        model = nominal_model
+        # --- System setup ---
+        nominal_model, spec, sim_cfg, ts_plot, ts_rob, low, high, is_nfc = setup_system(
+            args.system, subkey
+        )
 
-    # --- Sample ICs ---
-    key, subkey = jr.split(key)
-    ics = jr.uniform(subkey, (args.n_ics, low.shape[0]), minval=low, maxval=high)
+        # --- Model setup ---
+        if args.checkpoint is not None:
+            if args.model_type == "buffer":
+                template = BufferModel(jr.key(args.buffer_seed), nominal_model)
+            else:
+                template = nominal_model
+            model = eqx.tree_deserialise_leaves(args.checkpoint, template)
+            print(f"Loaded checkpoint from {args.checkpoint}")
+        elif args.model_type == "buffer":
+            model = BufferModel(jr.key(args.buffer_seed), nominal_model)
+        else:
+            model = nominal_model
 
-    # --- Simulate (fine dt for plotting) and evaluate robustness (dt=1.0) ---
-    traj_fn = TRAJ_FNS[args.system]
-    sim_plot = partial(model.simulate, ts=ts_plot, config=sim_cfg)
-    sim_rob = partial(model.simulate, ts=ts_rob, config=sim_cfg)
+        traj_fn = TRAJ_FNS[args.system]
 
-    all_traces = []
-    rhos = []
-    for i in range(args.n_ics):
-        x0 = ics[i]
-        y_plot, _ = sim_plot(x=x0)
-        y_rob, _ = sim_rob(x=x0)
-        all_traces.append(y_plot)
-        traj = traj_fn(y_rob, x0)
-        rho = spec.evaluate(traj)
-        rho = float(jnp.where(jnp.isfinite(rho), rho, -1.0))
-        rhos.append(rho)
-    rhos = np.array(rhos)
+        if args.ic_grid:
+            # --- IC grid robustness heatmap ---
+            model = perturb_model(model, subkey, args.perturb_scale)
+            d0, d1 = args.ic_grid_dims
+            center = (high + low) / 2
+            lo = jnp.array([low[d0], low[d1]])
+            hi = jnp.array([high[d0], high[d1]])
+            rho_grid = np.zeros(args.ic_grid_size)
+            points = jr.uniform(key, (args.ic_grid_size, 2), minval=lo, maxval=hi)
+            for i, p in enumerate(points):
+                x0 = center.at[d0].set(p[0]).at[d1].set(p[1])
+                y_rob, _ = model.simulate(x=x0, ts=ts_rob, config=sim_cfg)
+                traj = traj_fn(y_rob, x0)
+                rho = spec.evaluate(traj)
+                rho_grid[i] = float(jnp.where(jnp.isfinite(rho), rho, -1.0))
+
+            state_names = [
+                "pn",
+                "dpn",
+                "pe",
+                "dpe",
+                "h",
+                "dh",
+                "phi",
+                "dphi",
+                "theta",
+                "dtheta",
+                "psi",
+                "dpsi",
+            ]
+            dim_labels = (state_names[d0], state_names[d1])
+            fig, axes = plot_ic_grid(points, rho_grid, dim_labels)
+            n_sat = np.sum(rho_grid > 0)
+            n_total = rho_grid.size
+            print(f"Satisfied: {n_sat}/{n_total} ({100 * n_sat / n_total:.0f}%)")
+            print(
+                f"Robustness: min={rho_grid.min():.4f}, mean={rho_grid.mean():.4f}, "
+                f"max={rho_grid.max():.4f}"
+            )
+            if args.bounds_csv is not None:
+                _overlay_bounds(axes, args.bounds_csv, args.system)
+            Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(args.output, dpi=300, bbox_inches="tight")
+            if args.show:
+                plt.show()
+            plt.close(fig)
+            print(f"Saved to {args.output}")
+            return
+
+        if args.parameter_vary:
+            # --- Parameter perturbation from single IC ---
+            x0 = (low + high) / 2
+            ics = jnp.tile(x0, (args.n_ics, 1))
+            all_traces, rhos = [], []
+            for i in range(args.n_ics):
+                key, subkey = jr.split(key)
+                perturbed = perturb_model(model, subkey, args.perturb_scale)
+                y_plot, _ = perturbed.simulate(x=x0, ts=ts_plot, config=sim_cfg)
+                y_rob, _ = perturbed.simulate(x=x0, ts=ts_rob, config=sim_cfg)
+                all_traces.append(y_plot)
+                traj = traj_fn(y_rob, x0)
+                rho = spec.evaluate(traj)
+                rho = float(jnp.where(jnp.isfinite(rho), rho, -1.0))
+                rhos.append(rho)
+            rhos = np.array(rhos)
+        else:
+            # --- Sample ICs ---
+            key, subkey = jr.split(key)
+            ics = jr.uniform(
+                subkey, (args.n_ics, low.shape[0]), minval=low, maxval=high
+            )
+
+            # --- Simulate (fine dt for plotting) and evaluate robustness (dt=1.0) ---
+            sim_plot = partial(model.simulate, ts=ts_plot, config=sim_cfg)
+            sim_rob = partial(model.simulate, ts=ts_rob, config=sim_cfg)
+
+            all_traces = []
+            rhos = []
+            for i in range(args.n_ics):
+                x0 = ics[i]
+                y_plot, _ = sim_plot(x=x0)
+                y_rob, _ = sim_rob(x=x0)
+                all_traces.append(y_plot)
+                traj = traj_fn(y_rob, x0)
+                rho = spec.evaluate(traj)
+                rho = float(jnp.where(jnp.isfinite(rho), rho, -1.0))
+                rhos.append(rho)
+            rhos = np.array(rhos)
 
     n_sat = np.sum(rhos > 0)
     print(f"Satisfied: {n_sat}/{len(rhos)} ({100 * n_sat / len(rhos):.0f}%)")
@@ -598,8 +796,10 @@ def main():
         cmap = cm.Reds_r
     else:
         vabs = max(abs(rho_min), abs(rho_max))
-        norm = mcolors.TwoSlopeNorm(vmin=-vabs, vcenter=0, vmax=vabs)
-        cmap = cm.RdYlGn
+        norm = mcolors.TwoSlopeNorm(vmin=rho_min, vcenter=0, vmax=rho_max)
+
+        colors = ["#e31a1c", "#ff7f00", "#33a02c"]
+        cmap = mcolors.LinearSegmentedColormap.from_list("RedBlackGreen", colors)
 
     # --- Plot ---
     plot_fn = PLOT_FNS[args.system]
