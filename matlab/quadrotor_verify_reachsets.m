@@ -16,21 +16,6 @@ global_max_z  = -inf(num_grid_points, 1);
 global_min_vz = inf(num_grid_points, 1);
 global_max_vz = -inf(num_grid_points, 1);
 
-% figure; hold on; box on;
-% for k = 1:10
-%     R = reachableSets{k};
-% % plot results over time
-%     plotOverTime(R,3,'FaceColor','b','EdgeColor','none');
-% end
-% yline(1.4, 'r--', 'Threshold (1.4)', 'LineWidth', 2);
-% yline(0.9, 'r--', 'Threshold (0.9)', 'LineWidth', 2);
-% 
-% % label plot
-% xlabel('t');
-% ylabel('h');
-% 
-% axis([0,5,-0.8,1.5]);
-
 
 % --- 3. Loop and Verify ---
 for j = 1:length(reachableSets)
